@@ -7,9 +7,9 @@ dotenv.config();
 const testConnection = async () => {
   try {
     console.log('Testing MongoDB connection...');
-    console.log('MongoDB URI:', process.env.MONGODB_URI || 'mongodb://localhost:27017/smartprep');
+    console.log('MongoDB URI:', process.env.MONGODB_URI || 'mongodb+srv://kapuriyapurvj:ETLfKOTDmTFrLxpa@cluster0.on3xg.mongodb.net/SmartPrep');
     
-    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/smartprep');
+    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://kapuriyapurvj:ETLfKOTDmTFrLxpa@cluster0.on3xg.mongodb.net/SmartPrep');
     console.log('✅ MongoDB Connected successfully!');
     console.log(`Host: ${conn.connection.host}`);
     console.log(`Database: ${conn.connection.name}`);

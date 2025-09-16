@@ -124,6 +124,63 @@ class ApiService {
     });
   }
 
+  // Resume analysis methods
+  async analyzeResume(resumeText, jobDescription = '') {
+    return this.request('/resume/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ resumeText, jobDescription }),
+    });
+  }
+
+  async getResumeSuggestions(resumeText, focusArea) {
+    return this.request('/resume/suggestions', {
+      method: 'POST',
+      body: JSON.stringify({ resumeText, focusArea }),
+    });
+  }
+
+  async getResumeHistory() {
+    return this.request('/resume/history');
+  }
+
+  async uploadResumeFile(file) {
+    const url = `${this.baseURL}/resume/upload`;
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const headers = this.getHeaders();
+    delete headers['Content-Type']; // Let browser set multipart boundary
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message || `HTTP error! status: ${response.status}`);
+    }
+    return data;
+  }
+
+  async analyzeResumeStructured({ text, jobDescription, originalFileName }) {
+    return this.request('/resume/analyze-structured', {
+      method: 'POST',
+      body: JSON.stringify({ text, jobDescription, originalFileName }),
+    });
+  }
+
+  async listAnalyses({ q, minScore, maxScore, skill, page = 1, limit = 10 } = {}) {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (minScore) params.set('minScore', minScore);
+    if (maxScore) params.set('maxScore', maxScore);
+    if (skill) params.set('skill', skill);
+    params.set('page', page);
+    params.set('limit', limit);
+    return this.request(`/resume/analyses?${params.toString()}`);
+  }
+
   // Health check
   async healthCheck() {
     return this.request('/health', {
