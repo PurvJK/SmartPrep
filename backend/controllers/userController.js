@@ -1,6 +1,50 @@
 import User from '../models/User.js';
 import bcrypt from 'bcryptjs';
 
+// @desc    Get current user profile
+// @route   GET /api/users/profile
+// @access  Private
+export const getProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const user = await User.findById(userId).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          avatar: user.avatar,
+          isActive: user.isActive,
+          lastLogin: user.lastLogin,
+          profile: user.profile,
+          progress: user.progress,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during profile fetch',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 // @desc    Update user profile
 // @route   PUT /api/users/profile
 // @access  Private

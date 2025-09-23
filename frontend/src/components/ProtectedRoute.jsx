@@ -1,7 +1,7 @@
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
-const ProtectedRoute = ({ children, requireAdmin = false }) => {
+const ProtectedRoute = ({ children, requireAdmin = false, requireStudent = false }) => {
   const { user, loading, isAuthenticated } = useAuth();
   const location = useLocation();
 
@@ -22,6 +22,21 @@ const ProtectedRoute = ({ children, requireAdmin = false }) => {
   // Check admin requirement
   if (requireAdmin && user?.role !== 'admin') {
     return <Navigate to="/dashboard" replace />;
+  }
+
+  // Check student requirement - redirect admins to admin panel
+  if (requireStudent && user?.role !== 'student') {
+    return <Navigate to="/admin" replace />;
+  }
+
+  // Prevent admins from accessing student pages
+  if (user?.role === 'admin' && !requireAdmin) {
+    // Allow access to profile page for admins
+    if (location.pathname === '/profile') {
+      return children;
+    }
+    // Redirect all other non-admin pages to admin panel
+    return <Navigate to="/admin" replace />;
   }
 
   return children;

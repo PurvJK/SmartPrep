@@ -144,3 +144,21 @@ export async function analyzeStructured(text, jobDescription = '') {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -14,6 +14,7 @@ import Quizzes from "./pages/Quizzes";
 import CodingPractice from "./pages/CodingPractice";
 import InterviewPrep from "./pages/InterviewPrep";
 import ResumeAnalyzer from "./pages/ResumeAnalyzer";
+import Profile from "./pages/Profile";
 import AdminPanel from "./pages/AdminPanel";
 import NotFound from "./pages/NotFound";
 
@@ -31,36 +32,66 @@ const App = () => (
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/dashboard" element={
-              <ProtectedRoute>
+              <ProtectedRoute requireStudent={true}>
                 <Dashboard />
               </ProtectedRoute>
             } />
             <Route path="/study-materials" element={
-              <ProtectedRoute>
+              <ProtectedRoute requireStudent={true}>
                 <StudyMaterials />
               </ProtectedRoute>
             } />
             <Route path="/quizzes" element={
-              <ProtectedRoute>
+              <ProtectedRoute requireStudent={true}>
                 <Quizzes />
               </ProtectedRoute>
             } />
             <Route path="/coding-practice" element={
-              <ProtectedRoute>
+              <ProtectedRoute requireStudent={true}>
                 <CodingPractice />
               </ProtectedRoute>
             } />
             <Route path="/interview-prep" element={
-              <ProtectedRoute>
+              <ProtectedRoute requireStudent={true}>
                 <InterviewPrep />
               </ProtectedRoute>
             } />
             <Route path="/resume-analyzer" element={
-              <ProtectedRoute>
+              <ProtectedRoute requireStudent={true}>
                 <ResumeAnalyzer />
               </ProtectedRoute>
             } />
+            <Route path="/profile" element={
+              <ProtectedRoute>
+                <Profile />
+              </ProtectedRoute>
+            } />
             <Route path="/admin" element={
+              <ProtectedRoute requireAdmin={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/users" element={
+              <ProtectedRoute requireAdmin={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/content" element={
+              <ProtectedRoute requireAdmin={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/quizzes" element={
+              <ProtectedRoute requireAdmin={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/coding" element={
+              <ProtectedRoute requireAdmin={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/settings" element={
               <ProtectedRoute requireAdmin={true}>
                 <AdminPanel />
               </ProtectedRoute>

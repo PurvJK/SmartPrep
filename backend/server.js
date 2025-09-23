@@ -10,6 +10,8 @@ import connectDB from './config/database.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import resumeRoutes from './routes/resume.js';
+import studyMaterialRoutes from './routes/studyMaterial.js';
+import studyTheoryRoutes from './routes/studyTheory.js';
 
 // Load environment variables
 dotenv.config();
@@ -45,6 +47,9 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Serve static files from frontend public directory
+app.use('/images', express.static('../frontend/public/images'));
+
 // Logging middleware
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
@@ -64,6 +69,9 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/resume', resumeRoutes);
+app.use('/api/study-materials', studyMaterialRoutes);
+
+app.use('/api/study-theory', studyTheoryRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import api from '@/services/api';
 import Navbar from '@/components/Layout/Navbar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -18,7 +19,13 @@ const StudyMaterials = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedMaterial, setSelectedMaterial] = useState(null);
+  const [theoryByCategory, setTheoryByCategory] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [topics, setTopics] = useState([]);
+  const [selectedTopic, setSelectedTopic] = useState(null);
 
+  const [materials, setMaterials] = useState([]);
   const studyMaterials = [
     {
       id: 1,
@@ -196,6 +203,15 @@ A DBMS is software that handles the storage, retrieval, and updating of data.
 
   const categories = ['All', 'DSA', 'OS', 'DBMS', 'Aptitude', 'Programming'];
 
+  // Map UI categories to backend category names
+  const backendCategoryMap = {
+    'DSA': 'Data Structures & Algorithms (DSA)',
+    'OS': 'Operating System Concepts',
+    'DBMS': 'Database Management Systems (DBMS)',
+    'Aptitude': 'Quantitative Aptitude (Apti)',
+    'Programming': 'Object-Oriented Programming (OOP)'
+  };
+
   useEffect(() => {
     const userData = localStorage.getItem('user');
     if (userData) {
@@ -203,7 +219,42 @@ A DBMS is software that handles the storage, retrieval, and updating of data.
     }
   }, []);
 
-  const filteredMaterials = studyMaterials.filter(material => {
+  useEffect(() => {
+    const fetchAllTheory = async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const res = await api.getStudyTheory();
+        // res: { success: true, data: [ ... ] }
+        const byCat = {};
+        (res.data || []).forEach(doc => {
+          byCat[doc.category] = doc;
+        });
+        setTheoryByCategory(byCat);
+      } catch (e) {
+        setError(e.message || 'Failed to load study theory');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchAllTheory();
+  }, []);
+
+  // Fetch study materials from backend
+  useEffect(() => {
+    const fetchMaterials = async () => {
+      try {
+        const res = await api.listStudyMaterials();
+        setMaterials(res.data || []);
+      } catch (e) {
+        // keep local fallback if API fails
+      }
+    };
+    fetchMaterials();
+  }, []);
+
+  const sourceMaterials = materials.length > 0 ? materials : studyMaterials;
+  const filteredMaterials = sourceMaterials.filter(material => {
     const matchesSearch = material.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          material.description.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || material.category === selectedCategory;
@@ -216,6 +267,32 @@ A DBMS is software that handles the storage, retrieval, and updating of data.
       case 'Medium': return 'bg-yellow-100 text-yellow-800';
       case 'Hard': return 'bg-red-100 text-red-800';
       default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const handleOpenMaterial = async (material) => {
+    setSelectedMaterial(material);
+    setSelectedTopic(null);
+    setTopics([]);
+    const mapKey = backendCategoryMap[material.category];
+    if (!mapKey) return;
+    try {
+      const res = await api.listStudyTopics(mapKey);
+      setTopics(res.data || []);
+    } catch (e) {
+      // ignore; topics optional
+    }
+  };
+
+  const handleSelectTopic = async (topicId) => {
+    if (!selectedMaterial) return;
+    const mapKey = backendCategoryMap[selectedMaterial.category];
+    if (!mapKey) return;
+    try {
+      const res = await api.getStudyTopic(mapKey, topicId);
+      setSelectedTopic(res.data);
+    } catch (e) {
+      setSelectedTopic(null);
     }
   };
 
@@ -288,7 +365,7 @@ A DBMS is software that handles the storage, retrieval, and updating of data.
                   </p>
                   <div className="flex space-x-2">
                     <Button 
-                      onClick={() => setSelectedMaterial(material)}
+                      onClick={() => handleOpenMaterial(material)}
                       className="flex-1"
                     >
                       <Eye className="h-4 w-4 mr-2" />
@@ -303,11 +380,11 @@ A DBMS is software that handles the storage, retrieval, and updating of data.
             ))}
           </div>
         ) : (
-          <div className="max-w-4xl mx-auto">
+          <div className="max-w-6xl mx-auto">
             <div className="mb-6">
               <Button 
                 variant="outline" 
-                onClick={() => setSelectedMaterial(null)}
+                onClick={() => { setSelectedMaterial(null); setSelectedTopic(null); setTopics([]); }}
                 className="mb-4"
               >
                 ← Back to Materials
@@ -335,15 +412,106 @@ A DBMS is software that handles the storage, retrieval, and updating of data.
               </div>
             </div>
 
-            <Card>
-              <CardContent className="p-8">
-                <div className="prose max-w-none">
-                  <pre className="whitespace-pre-wrap font-sans text-foreground">
-                    {selectedMaterial.content}
-                  </pre>
-                </div>
-              </CardContent>
-            </Card>
+             <div className="space-y-6">
+               <Card>
+                 <CardHeader>
+                   <CardTitle className="text-lg">Topics</CardTitle>
+                 </CardHeader>
+                 <CardContent>
+                   {loading && <p className="text-sm text-muted-foreground">Loading topics...</p>}
+                   {!loading && topics.length === 0 && (
+                     <p className="text-sm text-muted-foreground">No topics available yet.</p>
+                   )}
+                   <div className="flex flex-wrap gap-2">
+                     {topics.map((t) => (
+                       <Button key={t._id} variant={selectedTopic?._id === t._id ? 'default' : 'outline'} size="sm" onClick={() => handleSelectTopic(t._id)}>
+                         {t.title}
+                       </Button>
+                     ))}
+                   </div>
+                 </CardContent>
+               </Card>
+
+               <Card>
+                <CardContent className="p-8">
+                  <div className="prose max-w-none">
+                    {selectedTopic ? (
+                      selectedTopic.content ? (
+                        <pre className="whitespace-pre-wrap font-sans text-foreground">{selectedTopic.content}</pre>
+                      ) : (
+                         <div className="space-y-6">
+                           {selectedTopic.sections?.map((sec, idx) => (
+                             <div key={idx}>
+                               <h2 className="text-xl font-semibold mb-2">{sec.heading}</h2>
+                               {sec.image && (
+                                 <div className="mb-4">
+                                   <img 
+                                     src={sec.image.startsWith('http') ? sec.image : sec.image} 
+                                     alt={sec.heading}
+                                     className="max-w-md w-full h-auto rounded-lg shadow-md mx-auto block"
+                                     onError={(e) => {
+                                       console.error('Image failed to load:', sec.image, 'Resolved to:', e.target.src);
+                                       e.target.style.display = 'none';
+                                     }}
+                                   />
+                                 </div>
+                               )}
+                               <ul className="list-disc pl-6 space-y-1">
+                                 {sec.items?.map((it, i) => (
+                                   <li key={i}>{it}</li>
+                                 ))}
+                               </ul>
+                             </div>
+                           ))}
+                         </div>
+                      )
+                    ) : (
+                      (() => {
+                        const mapKey = backendCategoryMap[selectedMaterial.category];
+                        const doc = mapKey ? theoryByCategory[mapKey] : null;
+                        if (doc) {
+                          if (doc.content) {
+                            return (
+                              <pre className="whitespace-pre-wrap font-sans text-foreground">{doc.content}</pre>
+                            );
+                          }
+                           return (
+                             <div className="space-y-6">
+                               {doc.sections?.map((sec, idx) => (
+                                 <div key={idx}>
+                                   <h2 className="text-xl font-semibold mb-2">{sec.heading}</h2>
+                                   {sec.image && (
+                                     <div className="mb-4">
+                                       <img 
+                                         src={sec.image.startsWith('http') ? sec.image : sec.image} 
+                                         alt={sec.heading}
+                                         className="max-w-md w-full h-auto rounded-lg shadow-md mx-auto block"
+                                         onError={(e) => {
+                                           console.error('Image failed to load:', sec.image, 'Resolved to:', e.target.src);
+                                           e.target.style.display = 'none';
+                                         }}
+                                       />
+                                     </div>
+                                   )}
+                                   <ul className="list-disc pl-6 space-y-1">
+                                     {sec.items?.map((it, i) => (
+                                       <li key={i}>{it}</li>
+                                     ))}
+                                   </ul>
+                                 </div>
+                               ))}
+                             </div>
+                           );
+                        }
+                        return (
+                          <pre className="whitespace-pre-wrap font-sans text-foreground">{selectedMaterial.content}</pre>
+                        );
+                      })()
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           </div>
         )}
       </div>

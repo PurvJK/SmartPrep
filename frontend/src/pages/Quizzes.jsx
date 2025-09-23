@@ -26,7 +26,7 @@ const Quizzes = () => {
   const [showResults, setShowResults] = useState(false);
   const { toast } = useToast();
 
-  // Sample quiz data
+  // Local curated quizzes
   const quizzes = [
     {
       id: 1,
@@ -120,6 +120,8 @@ const Quizzes = () => {
       setUser(JSON.parse(userData));
     }
   }, []);
+
+  // No external API integration
 
   // Timer effect
   useEffect(() => {
@@ -217,6 +219,8 @@ const Quizzes = () => {
               Test your knowledge with timed quizzes and track your progress
             </p>
           </div>
+
+          {/* Local quizzes only */}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {quizzes.map(quiz => (

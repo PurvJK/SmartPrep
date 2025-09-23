@@ -1,5 +1,6 @@
 import express from 'express';
 import {
+  getProfile,
   updateProfile,
   changePassword,
   updateProgress,
@@ -17,6 +18,7 @@ const router = express.Router();
 router.use(protect);
 
 // User routes
+router.get('/profile', getProfile);
 router.put('/profile', validateProfileUpdate, updateProfile);
 router.put('/change-password', validatePasswordChange, changePassword);
 router.put('/progress', updateProgress);

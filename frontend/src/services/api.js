@@ -81,6 +81,10 @@ class ApiService {
   }
 
   // User methods
+  async getProfile() {
+    return this.request('/users/profile');
+  }
+
   async updateProfile(profileData) {
     return this.request('/users/profile', {
       method: 'PUT',
@@ -99,6 +103,66 @@ class ApiService {
     return this.request('/users/progress', {
       method: 'PUT',
       body: JSON.stringify(progressData),
+    });
+  }
+
+  // Study materials methods
+  async listStudyMaterials({ q, category, difficulty } = {}) {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (category) params.set('category', category);
+    if (difficulty) params.set('difficulty', difficulty);
+    const query = params.toString();
+    return this.request(`/study-materials${query ? `?${query}` : ''}`);
+  }
+
+  async getStudyMaterialById(id) {
+    return this.request(`/study-materials/${id}`);
+  }
+
+  async createStudyMaterial(material) {
+    return this.request('/study-materials', {
+      method: 'POST',
+      body: JSON.stringify(material),
+    });
+  }
+
+  async updateStudyMaterial(id, updates) {
+    return this.request(`/study-materials/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  async deleteStudyMaterial(id) {
+    return this.request(`/study-materials/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Study theory methods
+  async getStudyTheory(category) {
+    const query = category ? `?category=${encodeURIComponent(category)}` : '';
+    return this.request(`/study-theory${query}`, { includeAuth: false });
+  }
+
+  async listStudyTopics(category) {
+    const params = new URLSearchParams();
+    if (category) params.set('category', category);
+    return this.request(`/study-theory/topics?${params.toString()}`, { includeAuth: false });
+  }
+
+  async getStudyTopic(category, topicId) {
+    const params = new URLSearchParams();
+    if (category) params.set('category', category);
+    if (topicId) params.set('topicId', topicId);
+    return this.request(`/study-theory/topic?${params.toString()}`, { includeAuth: false });
+  }
+
+  async upsertStudyTheory({ category, title, description, content, sections }) {
+    return this.request('/study-theory', {
+      method: 'POST',
+      body: JSON.stringify({ category, title, description, content, sections }),
     });
   }
 
