@@ -1,0 +1,19 @@
+{
+  "name": "resume",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@gradio/client": "^1.18.0"
+  },
+  "dependencies": {
+    "pdf-parse": "^1.1.1"
+  }
+}
