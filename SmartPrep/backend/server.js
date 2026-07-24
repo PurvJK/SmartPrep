@@ -16,6 +16,8 @@ import resumeRoutes from './routes/resume.js';
 import theoryRoutes from './routes/theory.js';
 import uploadRoutes from './routes/upload.js';
 import codingProblemRoutes from './routes/codingProblems.js';
+import quizRoutes from './routes/quizzes.js';
+import interviewQuestionRoutes from './routes/interviewQuestions.js';
 
 // Load environment variables
 dotenv.config();
@@ -86,6 +88,8 @@ app.use('/api/resume', resumeRoutes);
 app.use('/api/theory', theoryRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/coding-problems', codingProblemRoutes);
+app.use('/api/quizzes', quizRoutes);
+app.use('/api/interview-questions', interviewQuestionRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

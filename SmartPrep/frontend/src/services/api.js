@@ -116,6 +116,42 @@ class ApiService {
     return this.request(`/theory${query}`, { includeAuth: false });
   }
 
+  // Quiz methods
+  async listQuizzes({ category, difficulty, includeUnpublished } = {}) {
+    const params = new URLSearchParams();
+    if (category) params.set('category', category);
+    if (difficulty) params.set('difficulty', difficulty);
+    if (includeUnpublished) params.set('includeUnpublished', includeUnpublished);
+    const query = params.toString();
+    return this.request(`/quizzes${query ? `?${query}` : ''}`, {
+      includeAuth: includeUnpublished ? true : false
+    });
+  }
+
+  async getQuizById(id) {
+    return this.request(`/quizzes/${id}`);
+  }
+
+  async createQuiz(quizData) {
+    return this.request('/quizzes', {
+      method: 'POST',
+      body: JSON.stringify(quizData),
+    });
+  }
+
+  async updateQuiz(id, quizData) {
+    return this.request(`/quizzes/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(quizData),
+    });
+  }
+
+  async deleteQuiz(id) {
+    return this.request(`/quizzes/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getTheoryById(id) {
     return this.request(`/theory/${id}`, { includeAuth: false });
   }
@@ -195,6 +231,13 @@ class ApiService {
     });
   }
 
+  async runCode(problemId, { code, language, stdin = '' }) {
+    return this.request(`/coding-problems/${problemId}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ code, language, stdin }),
+    });
+  }
+
   async submitSolution(problemId, { code, language }) {
     return this.request(`/coding-problems/${problemId}/submit`, {
       method: 'POST',
@@ -225,6 +268,12 @@ class ApiService {
   async deactivateUser(userId) {
     return this.request(`/users/${userId}/deactivate`, {
       method: 'PUT',
+    });
+  }
+
+  async deleteUser(userId) {
+    return this.request(`/users/${userId}`, {
+      method: 'DELETE',
     });
   }
 
@@ -274,6 +323,47 @@ class ApiService {
     });
   }
 
+  async updateJobDescriptionVisibility(withJobDescription = true) {
+    return this.request('/resume/jobdesc-visibility', {
+      method: 'POST',
+      body: JSON.stringify({ withJobDescription }),
+    });
+  }
+
+  async processResumeWithHF(file) {
+    const url = `${this.baseURL}/resume/process-hf`;
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const headers = this.getHeaders();
+    delete headers['Content-Type'];
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message || `HTTP error! status: ${response.status}`);
+    }
+    return data;
+  }
+
+  async generateCoverLetter(resumeText, jobDescription = '', { temperature, max_tokens } = {}) {
+    return this.request('/resume/cover-letter', {
+      method: 'POST',
+      body: JSON.stringify({ resumeText, jobDescription, temperature, max_tokens }),
+    });
+  }
+
+  async generateInterviewQuestions(jobDescription, { temperature, max_tokens } = {}) {
+    return this.request('/resume/interview-questions', {
+      method: 'POST',
+      body: JSON.stringify({ jobDescription, temperature, max_tokens }),
+    });
+  }
+
   async listAnalyses({ q, minScore, maxScore, skill, page = 1, limit = 10 } = {}) {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
@@ -283,6 +373,42 @@ class ApiService {
     params.set('page', page);
     params.set('limit', limit);
     return this.request(`/resume/analyses?${params.toString()}`);
+  }
+
+  // Interview questions methods
+  async listInterviewQuestions({ category, difficulty, includeUnpublished } = {}) {
+    const params = new URLSearchParams();
+    if (category) params.set('category', category);
+    if (difficulty) params.set('difficulty', difficulty);
+    if (includeUnpublished) params.set('includeUnpublished', includeUnpublished);
+    const query = params.toString();
+    return this.request(`/interview-questions${query ? `?${query}` : ''}`, {
+      includeAuth: includeUnpublished ? true : false
+    });
+  }
+
+  async getInterviewQuestionById(id) {
+    return this.request(`/interview-questions/${id}`, { includeAuth: false });
+  }
+
+  async createInterviewQuestion(questionData) {
+    return this.request('/interview-questions', {
+      method: 'POST',
+      body: JSON.stringify(questionData),
+    });
+  }
+
+  async updateInterviewQuestion(id, questionData) {
+    return this.request(`/interview-questions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(questionData),
+    });
+  }
+
+  async deleteInterviewQuestion(id) {
+    return this.request(`/interview-questions/${id}`, {
+      method: 'DELETE',
+    });
   }
 
   // Health check

@@ -7,7 +7,8 @@ import {
   getAllUsers,
   getUserById,
   updateUserRole,
-  deactivateUser
+  deactivateUser,
+  deleteUser
 } from '../controllers/userController.js';
 import { protect, authorize } from '../middleware/auth.js';
 import { validateProfileUpdate, validatePasswordChange } from '../middleware/validation.js';
@@ -28,5 +29,6 @@ router.get('/', authorize('admin'), getAllUsers);
 router.get('/:id', authorize('admin'), getUserById);
 router.put('/:id/role', authorize('admin'), updateUserRole);
 router.put('/:id/deactivate', authorize('admin'), deactivateUser);
+router.delete('/:id', authorize('admin'), deleteUser);
 
 export default router;

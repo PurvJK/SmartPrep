@@ -13,8 +13,6 @@ import {
   MessageSquare,
   User,
   Plus,
-  Settings,
-  BarChart3,
   Database
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
@@ -92,12 +90,11 @@ const Navbar = () => {
               {user.role === 'admin' && (
                 <>
                   {[
-                    { to: '/admin', label: 'Dashboard', icon: BarChart3 },
                     { to: '/admin/users', label: 'Users', icon: Users },
                     { to: '/admin/content', label: 'Add Content', icon: Plus },
                     { to: '/admin/quizzes', label: 'Quizzes', icon: Brain },
+                    { to: '/admin/interviews', label: 'Interview Questions', icon: MessageSquare },
                     { to: '/admin/coding', label: 'Set Code', icon: Code },
-                    { to: '/admin/settings', label: 'Settings', icon: Settings },
                   ].map(item => (
                     <Link key={item.to} to={item.to}>
                       <Button size="sm" variant={isActive(item.to) ? 'default' : 'ghost'} className="flex items-center space-x-2">
@@ -189,12 +186,6 @@ const Navbar = () => {
             {/* Admin Mobile Navigation */}
             {user.role === 'admin' && (
               <>
-                <Link to="/admin" className="block">
-                  <Button variant={isActive('/admin') ? 'default' : 'ghost'} className="w-full justify-start">
-                    <BarChart3 className="h-4 w-4 mr-2" />
-                    Dashboard
-                  </Button>
-                </Link>
                 <Link to="/admin/users" className="block">
                   <Button variant={isActive('/admin/users') ? 'default' : 'ghost'} className="w-full justify-start">
                     <Users className="h-4 w-4 mr-2" />
@@ -213,16 +204,16 @@ const Navbar = () => {
                     Quizzes
                   </Button>
                 </Link>
+                <Link to="/admin/interviews" className="block">
+                  <Button variant={isActive('/admin/interviews') ? 'default' : 'ghost'} className="w-full justify-start">
+                    <MessageSquare className="h-4 w-4 mr-2" />
+                    Interview Questions
+                  </Button>
+                </Link>
                 <Link to="/admin/coding" className="block">
                   <Button variant={isActive('/admin/coding') ? 'default' : 'ghost'} className="w-full justify-start">
                     <Code className="h-4 w-4 mr-2" />
                     Set Code
-                  </Button>
-                </Link>
-                <Link to="/admin/settings" className="block">
-                  <Button variant={isActive('/admin/settings') ? 'default' : 'ghost'} className="w-full justify-start">
-                    <Settings className="h-4 w-4 mr-2" />
-                    Settings
                   </Button>
                 </Link>
               </>

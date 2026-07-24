@@ -296,17 +296,17 @@ for (let i = 0; i < arr.length; i++) {
                     return (
                       <div 
                         key={idx}
-                        className="whitespace-pre-wrap font-sans text-foreground"
+                        className="whitespace-pre-wrap font-sans text-foreground text-lg"
                         dangerouslySetInnerHTML={{ 
                           __html: part.split('\n').map(line => {
                             // Basic markdown rendering
-                            if (line.startsWith('# ')) return `<h1 class="text-2xl font-bold mt-4 mb-2">${line.substring(2)}</h1>`;
-                            if (line.startsWith('## ')) return `<h2 class="text-xl font-bold mt-3 mb-2">${line.substring(3)}</h2>`;
-                            if (line.startsWith('### ')) return `<h3 class="text-lg font-semibold mt-2 mb-1">${line.substring(4)}</h3>`;
-                            if (line.startsWith('- ')) return `<li class="ml-4 mb-1">${line.substring(2)}</li>`;
+                            if (line.startsWith('# ')) return `<h1 class="text-3xl font-bold mt-4 mb-2">${line.substring(2)}</h1>`;
+                            if (line.startsWith('## ')) return `<h2 class="text-2xl font-bold mt-3 mb-2">${line.substring(3)}</h2>`;
+                            if (line.startsWith('### ')) return `<h3 class="text-xl font-semibold mt-2 mb-1">${line.substring(4)}</h3>`;
+                            if (line.startsWith('- ')) return `<li class="ml-4 mb-1 text-lg">${line.substring(2)}</li>`;
                             if (line.startsWith('![](')) {
                               const url = line.match(/!\[\]\((.*?)\)/)?.[1];
-                              return url ? `<img src="${url}" alt="" class="max-w-full rounded my-4" />` : line;
+                              return url ? `<img src="${url}" alt="" class="max-w-xl rounded my-4" />` : line;
                             }
                             // Inline code
                             const withInlineCode = line.replace(/`([^`]+)`/g, '<code class="bg-muted px-1 py-0.5 rounded text-xs font-mono">$1</code>');
@@ -315,7 +315,7 @@ for (let i = 0; i < arr.length; i++) {
                             // Italic
                             const withItalic = withBold.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
                             if (line.trim() === '') return '<br />';
-                            return `<p class="mb-2">${withItalic}</p>`;
+                            return `<p class="mb-2 text-lg">${withItalic}</p>`;
                           }).join('')
                         }}
                       />

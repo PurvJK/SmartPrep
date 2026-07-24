@@ -14,9 +14,11 @@ import {
   Target
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import api from '@/services/api';
 
 const Quizzes = () => {
   const [user, setUser] = useState(null);
+  const [quizzes, setQuizzes] = useState([]);
   const [selectedQuiz, setSelectedQuiz] = useState(null);
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState([]);
@@ -24,95 +26,30 @@ const Quizzes = () => {
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [score, setScore] = useState(0);
   const [showResults, setShowResults] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const { toast } = useToast();
 
-  // Local curated quizzes
-  const quizzes = [
-    {
-      id: 1,
-      title: 'Data Structures Basics',
-      category: 'DSA',
-      difficulty: 'Easy',
-      timeLimit: 600,
-      description: 'Test your knowledge of basic data structures',
-      questions: [
-        {
-          id: 1,
-          question: 'What is the time complexity of accessing an element in an array by index?',
-          options: ['O(1)', 'O(n)', 'O(log n)', 'O(n²)'],
-          correctAnswer: 0,
-          explanation: 'Array elements can be accessed directly using their index, which takes constant time O(1).'
-        },
-        {
-          id: 2,
-          question: 'Which data structure follows LIFO principle?',
-          options: ['Queue', 'Stack', 'Array', 'Linked List'],
-          correctAnswer: 1,
-          explanation: 'Stack follows Last In First Out (LIFO) principle where the last element added is the first one to be removed.'
-        },
-        {
-          id: 3,
-          question: 'In a linked list, what is the time complexity of inserting at the beginning?',
-          options: ['O(n)', 'O(1)', 'O(log n)', 'O(n²)'],
-          correctAnswer: 1,
-          explanation: 'Inserting at the beginning of a linked list only requires updating the head pointer, which takes O(1) time.'
-        }
-      ]
-    },
-    {
-      id: 2,
-      title: 'Operating System Fundamentals',
-      category: 'OS',
-      difficulty: 'Medium',
-      timeLimit: 900,
-      description: 'Test your understanding of OS concepts',
-      questions: [
-        {
-          id: 1,
-          question: 'What is a deadlock in operating systems?',
-          options: [
-            'A process that never terminates',
-            'A situation where processes wait for each other indefinitely',
-            'A memory allocation error',
-            'A CPU scheduling algorithm'
-          ],
-          correctAnswer: 1,
-          explanation: 'Deadlock occurs when processes are blocked forever, waiting for each other to release resources.'
-        },
-        {
-          id: 2,
-          question: 'Which scheduling algorithm gives the shortest average waiting time?',
-          options: ['FCFS', 'SJF', 'Round Robin', 'Priority'],
-          correctAnswer: 1,
-          explanation: 'Shortest Job First (SJF) gives the minimum average waiting time among all scheduling algorithms.'
-        }
-      ]
-    },
-    {
-      id: 3,
-      title: 'Quantitative Aptitude',
-      category: 'Aptitude',
-      difficulty: 'Easy',
-      timeLimit: 480,
-      description: 'Basic mathematical reasoning and problem solving',
-      questions: [
-        {
-          id: 1,
-          question: 'If 20% of a number is 50, what is the number?',
-          options: ['200', '250', '300', '150'],
-          correctAnswer: 1,
-          explanation: 'If 20% of x = 50, then x = 50 × (100/20) = 250'
-        },
-        {
-          id: 2,
-          question: 'A train travels 60 km in 40 minutes. What is its speed in km/h?',
-          options: ['80 km/h', '90 km/h', '100 km/h', '120 km/h'],
-          correctAnswer: 1,
-          explanation: 'Speed = Distance/Time = 60 km ÷ (40/60) hours = 60 ÷ (2/3) = 90 km/h'
-        }
-      ]
-    }
-  ];
+  useEffect(() => {
+    const fetchQuizzes = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        const res = await api.listQuizzes();
+        const list = Array.isArray(res) ? res : (res.data || []);
+        const available = list.filter(
+          quiz => quiz.questions && quiz.questions.length > 0 && quiz.isPublished !== false
+        );
+        setQuizzes(available);
+      } catch (err) {
+        setError(err.message || 'Failed to load quizzes');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchQuizzes();
+  }, []);
 
   useEffect(() => {
     const userData = localStorage.getItem('user');
@@ -134,10 +71,19 @@ const Quizzes = () => {
   }, [timeLeft, selectedQuiz, quizCompleted]);
 
   const startQuiz = (quiz) => {
+    if (!quiz || !quiz.questions || quiz.questions.length === 0) {
+      toast({
+        title: 'Quiz not available',
+        description: 'This quiz does not have any questions yet.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     setSelectedQuiz(quiz);
     setCurrentQuestion(0);
     setSelectedAnswers(new Array(quiz.questions.length).fill(-1));
-    setTimeLeft(quiz.timeLimit);
+    setTimeLeft(quiz.timeLimit || quiz.questions.length * 60 || 600);
     setQuizCompleted(false);
     setShowResults(false);
     setScore(0);
@@ -220,11 +166,25 @@ const Quizzes = () => {
             </p>
           </div>
 
-          {/* Local quizzes only */}
+          {loading && (
+            <p className="text-muted-foreground">Loading quizzes...</p>
+          )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {quizzes.map(quiz => (
-              <Card key={quiz.id} className="hover:shadow-lg transition-shadow">
+          {error && (
+            <p className="text-red-500">{error}</p>
+          )}
+
+          {!loading && !error && quizzes.length === 0 && (
+            <Card className="p-6 text-center">
+              <CardTitle className="text-xl mb-2">No quizzes available yet</CardTitle>
+              <p className="text-muted-foreground">Please check back later.</p>
+            </Card>
+          )}
+
+          {!loading && !error && quizzes.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {quizzes.map(quiz => (
+              <Card key={quiz._id} className="hover:shadow-lg transition-shadow">
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <Brain className="h-8 w-8 text-primary" />
@@ -236,11 +196,11 @@ const Quizzes = () => {
                   <div className="flex items-center space-x-4 text-sm text-muted-foreground">
                     <div className="flex items-center space-x-1">
                       <Clock className="h-4 w-4" />
-                      <span>{Math.floor(quiz.timeLimit / 60)} min</span>
+                        <span>{Math.max(1, Math.round((quiz.timeLimit || 600) / 60))} min</span>
                     </div>
                     <div className="flex items-center space-x-1">
                       <Target className="h-4 w-4" />
-                      <span>{quiz.questions.length} questions</span>
+                        <span>{quiz.questions?.length || 0} questions</span>
                     </div>
                   </div>
                 </CardHeader>
@@ -255,7 +215,8 @@ const Quizzes = () => {
                 </CardContent>
               </Card>
             ))}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );

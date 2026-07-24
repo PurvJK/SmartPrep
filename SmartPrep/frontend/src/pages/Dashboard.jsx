@@ -4,6 +4,7 @@ import Navbar from '@/components/Layout/Navbar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import api from '@/services/api';
 
 import { 
   BookOpen, 
@@ -19,32 +20,108 @@ import {
 
 const Dashboard = () => {
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
-    quizzesCompleted: 15,
-    totalQuizzes: 50,
-    codingProblems: 8,
-    totalCodingProblems: 30,
-    studyMaterialsRead: 12,
-    totalStudyMaterials: 25,
-    interviewQuestionsAnswered: 25,
-    totalInterviewQuestions: 100
+    quizzesCompleted: 0,
+    totalQuizzes: 0,
+    codingProblems: 0,
+    totalCodingProblems: 0,
+    studyMaterialsRead: 0,
+    totalStudyMaterials: 0,
+    interviewQuestionsAnswered: 0,
+    totalInterviewQuestions: 0
   });
 
   useEffect(() => {
-    // Get user from localStorage
-    const userData = localStorage.getItem('user');
-    if (userData) {
-      setUser(JSON.parse(userData));
-    }
+    const fetchDashboardData = async () => {
+      try {
+        setLoading(true);
+        
+        // Get user from localStorage first
+        const userData = localStorage.getItem('user');
+        if (userData) {
+          setUser(JSON.parse(userData));
+        }
+
+        // Fetch user profile with progress
+        try {
+          const profileResponse = await api.getProfile();
+          if (profileResponse.success && profileResponse.data?.user) {
+            const userProfile = profileResponse.data.user;
+            setUser(userProfile);
+            
+            // Update stats from user progress
+            setStats(prev => ({
+              ...prev,
+              quizzesCompleted: userProfile.progress?.completedQuizzes || 0,
+              codingProblems: userProfile.progress?.solvedCodingProblems || 0,
+              studyMaterialsRead: userProfile.progress?.studyMaterialsRead || 0,
+              totalQuizzes: userProfile.progress?.totalQuizzes || 0,
+              totalCodingProblems: userProfile.progress?.totalCodingProblems || 0
+            }));
+          }
+        } catch (error) {
+          console.error('Error fetching profile:', error);
+        }
+
+        // Fetch total counts
+        try {
+          // Get total quizzes
+          const quizzesResponse = await api.listQuizzes({ includeUnpublished: false });
+          const totalQuizzes = Array.isArray(quizzesResponse) 
+            ? quizzesResponse.length 
+            : (quizzesResponse.data?.length || quizzesResponse.length || 0);
+          
+          // Get total coding problems
+          const codingResponse = await api.getCodingProblems({ limit: 1000 });
+          const totalCoding = codingResponse.data?.problems?.length || codingResponse.data?.total || 0;
+          
+          // Get total study materials
+          const theoryResponse = await api.listTheory();
+          const totalTheory = Array.isArray(theoryResponse) 
+            ? theoryResponse.length 
+            : (theoryResponse.data?.length || theoryResponse.length || 0);
+          
+          // Get total interview questions
+          const interviewResponse = await api.listInterviewQuestions({ includeUnpublished: false });
+          const totalInterviews = Array.isArray(interviewResponse) 
+            ? interviewResponse.length 
+            : (interviewResponse.data?.length || interviewResponse.length || 0);
+
+          setStats(prev => ({
+            ...prev,
+            totalQuizzes: totalQuizzes || prev.totalQuizzes,
+            totalCodingProblems: totalCoding || prev.totalCodingProblems,
+            totalStudyMaterials: totalTheory || prev.totalStudyMaterials,
+            totalInterviewQuestions: totalInterviews || prev.totalInterviewQuestions
+          }));
+        } catch (error) {
+          console.error('Error fetching totals:', error);
+        }
+      } catch (error) {
+        console.error('Error loading dashboard:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDashboardData();
   }, []);
 
   // Calculate overall progress
-  const overallProgress = Math.round(
-    ((stats.quizzesCompleted / stats.totalQuizzes) +
-     (stats.codingProblems / stats.totalCodingProblems) +
-     (stats.studyMaterialsRead / stats.totalStudyMaterials) +
-     (stats.interviewQuestionsAnswered / stats.totalInterviewQuestions)) / 4 * 100
-  );
+  const calculateOverallProgress = () => {
+    const quizProgress = stats.totalQuizzes > 0 ? (stats.quizzesCompleted / stats.totalQuizzes) : 0;
+    const codingProgress = stats.totalCodingProblems > 0 ? (stats.codingProblems / stats.totalCodingProblems) : 0;
+    const studyProgress = stats.totalStudyMaterials > 0 ? (stats.studyMaterialsRead / stats.totalStudyMaterials) : 0;
+    const interviewProgress = stats.totalInterviewQuestions > 0 ? (stats.interviewQuestionsAnswered / stats.totalInterviewQuestions) : 0;
+    
+    const totalProgress = quizProgress + codingProgress + studyProgress + interviewProgress;
+    const averageProgress = totalProgress > 0 ? (totalProgress / 4) * 100 : 0;
+    
+    return Math.round(averageProgress);
+  };
+
+  const overallProgress = calculateOverallProgress();
 
   const modules = [
     {
@@ -89,12 +166,33 @@ const Dashboard = () => {
     }
   ];
 
-  const recentActivities = [
-    { action: 'Completed Quiz: Data Structures', time: '2 hours ago', icon: CheckCircle },
-    { action: 'Read: Operating Systems Basics', time: '5 hours ago', icon: BookOpen },
-    { action: 'Solved: Two Sum Problem', time: '1 day ago', icon: Code },
-    { action: 'Practiced: HR Interview Questions', time: '2 days ago', icon: MessageSquare }
-  ];
+  // Recent activities - can be enhanced later with activity log API
+  const recentActivities = [];
+  
+  // Show placeholder if no activities
+  if (recentActivities.length === 0) {
+    recentActivities.push({
+      action: 'Start your learning journey!',
+      time: 'Complete quizzes, solve problems, and read materials to see your activity here.',
+      icon: CheckCircle
+    });
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Navbar user={user} onLogout={() => setUser(null)} />
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="flex items-center justify-center h-64">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+              <p className="text-muted-foreground">Loading dashboard...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -104,7 +202,7 @@ const Dashboard = () => {
         {/* Welcome Section */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-foreground mb-2">
-            Welcome back, Purv Kapuriya! 
+            Welcome back, {user?.name || 'Student'}! 
           </h1>
           <p className="text-muted-foreground">
             Continue your placement preparation journey
@@ -152,10 +250,10 @@ const Dashboard = () => {
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center space-x-2">
-                <Clock className="h-8 w-8 text-blue-500" />
+                <BookOpen className="h-8 w-8 text-blue-500" />
                 <div>
-                  <p className="text-sm text-muted-foreground">Study Hours</p>
-                  <p className="text-2xl font-bold">45</p>
+                  <p className="text-sm text-muted-foreground">Materials Read</p>
+                  <p className="text-2xl font-bold">{stats.studyMaterialsRead}</p>
                 </div>
               </div>
             </CardContent>

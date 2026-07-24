@@ -28,6 +28,11 @@ const CodingProblemSchema = new mongoose.Schema({
   testCases: [TestCaseSchema],
   hints: [String],
   solution: { type: String },
+  starterCode: {
+    type: Map,
+    of: String,
+    default: {}
+  },
   timeLimit: { type: Number, default: 1000 }, // milliseconds
   memoryLimit: { type: Number, default: 128 }, // MB
   isActive: { type: Boolean, default: true }

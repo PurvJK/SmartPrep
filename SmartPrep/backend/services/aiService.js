@@ -31,7 +31,7 @@ class AIService {
       const result = await client.predict('/analyze_resume', {
         resume_text: resumeText,
         job_description: jobDescription || ' ',
-        with_job_description: Boolean(jobDescription) || true,
+        with_job_description: Boolean(jobDescription),
         temperature: 0.3,
         max_tokens: 800,
       });
@@ -63,6 +63,51 @@ class AIService {
       console.error('HF suggestions error:', error);
       return 'Unable to generate suggestions at this time. Please try again later.';
     }
+  }
+
+  async updateJobDescriptionVisibility(withJobDescription = true) {
+    const client = await this.getClient();
+    const result = await client.predict('/update_job_description_visibility', {
+      with_job_description: Boolean(withJobDescription),
+    });
+    return Array.isArray(result.data) ? result.data[0] : result.data;
+  }
+
+  async processResumeFile(fileBuffer, { mimeType = 'application/pdf', fileName = 'resume.pdf' } = {}) {
+    const client = await this.getClient();
+
+    const BlobCtor = globalThis.Blob;
+    const FileCtor = globalThis.File;
+    if (!BlobCtor) {
+      throw new Error('Blob is not available in this Node runtime. Please run on Node 18+');
+    }
+
+    const blob = new BlobCtor([fileBuffer], { type: mimeType });
+    const file = FileCtor ? new FileCtor([blob], fileName, { type: mimeType }) : blob;
+
+    const result = await client.predict('/process_resume', { file });
+    return Array.isArray(result.data) ? result.data[0] : result.data;
+  }
+
+  async generateCoverLetter(resumeText, jobDescription = '', { temperature = 0.4, max_tokens = 600 } = {}) {
+    const client = await this.getClient();
+    const result = await client.predict('/generate_cover_letter', {
+      resume_text: resumeText,
+      job_description: jobDescription || ' ',
+      temperature,
+      max_tokens,
+    });
+    return Array.isArray(result.data) ? result.data[0] : result.data;
+  }
+
+  async generateInterviewQuestions(jobDescription, { temperature = 0.4, max_tokens = 500 } = {}) {
+    const client = await this.getClient();
+    const result = await client.predict('/generate_interview_questions', {
+      job_description: jobDescription || ' ',
+      temperature,
+      max_tokens,
+    });
+    return Array.isArray(result.data) ? result.data[0] : result.data;
   }
 
   mapTextToAnalysis(text, resumeText) {

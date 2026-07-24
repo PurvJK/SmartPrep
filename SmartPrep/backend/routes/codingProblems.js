@@ -2,9 +2,19 @@ import express from "express";
 import CodingProblem from "../models/CodingProblem.js";
 import Submission from "../models/Submission.js";
 import { protect, authorize } from "../middleware/auth.js";
-import { createSubmission as judge0Run } from "../services/judge0Service.js";
+import { createSubmission as judge0Run, checkJudge0Health } from "../services/judge0Service.js";
 
 const router = express.Router();
+
+// Health check endpoint for Judge0
+router.get("/health/judge0", async (req, res) => {
+  try {
+    const health = await checkJudge0Health();
+    res.json({ success: true, data: health });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // GET all coding problems with filters
 router.get("/", async (req, res) => {
@@ -125,19 +135,46 @@ router.post("/:id/submit", protect, async (req, res) => {
 
     // Execute against test cases using Judge0
     const testResults = [];
-    for (const tc of problem.testCases) {
-      const result = await judge0Run({ sourceCode: code, language, stdin: tc.input });
+    for (let i = 0; i < problem.testCases.length; i++) {
+      const tc = problem.testCases[i];
+      
+      // Log test case execution (in development)
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[Test Case ${i + 1}/${problem.testCases.length}] Input: ${tc.input}, Expected: ${tc.expectedOutput}`);
+      }
+      
+      // Execute each test case independently
+      const result = await judge0Run({ 
+        sourceCode: code, 
+        language, 
+        stdin: tc.input || '' // Ensure we pass the input, even if empty
+      });
+      
       const status = result.status?.description || 'Unknown';
       const stdout = (result.stdout || '').trim();
       const stderr = (result.stderr || '').trim();
-      const actual = stdout || stderr;
-      const passed = stdout?.trim() === String(tc.expectedOutput).trim();
+      const compileOutput = (result.compile_output || '').trim();
+      const message = (result.message || '').trim();
+      const actual = stdout || stderr || compileOutput || message;
+      
+      // Compare outputs (case-insensitive and whitespace-normalized)
+      const expectedNormalized = String(tc.expectedOutput || '').trim();
+      const actualNormalized = actual.trim();
+      const passed = actualNormalized === expectedNormalized;
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[Test Case ${i + 1}] Output: "${actualNormalized}", Expected: "${expectedNormalized}", Passed: ${passed}`);
+      }
+      
       testResults.push({
         passed,
-        input: tc.input,
-        expected: tc.expectedOutput,
-        actual: actual,
+        input: tc.input || '',
+        expected: expectedNormalized,
+        actual: actualNormalized || 'No output',
         status,
+        stderr,
+        compileOutput,
+        message,
         time: result.time,
         memory: result.memory,
       });
@@ -161,7 +198,100 @@ router.post("/:id/submit", protect, async (req, res) => {
     return res.json({ success: true, data: { submission, testResults, status: finalStatus } });
   } catch (err) {
     console.error('Judge0 submit error:', err);
-    res.status(500).json({ success: false, message: err.message });
+    
+    // Provide better error messages based on status code
+    let statusCode = 500;
+    let message = err.message || 'Failed to submit solution';
+    
+    if (err.statusCode === 400) {
+      statusCode = 400;
+      message = err.message || 'Invalid code execution request. Please check code format and try again.';
+    } else if (err.statusCode === 401) {
+      statusCode = 401;
+      message = err.message || 'Invalid Judge0 API credentials. Please update server configuration.';
+    } else if (err.statusCode === 403) {
+      statusCode = 403;
+      message = 'Code execution service is not available. Please contact administrator.';
+    } else if (err.statusCode === 429) {
+      statusCode = 429;
+      message = 'Too many requests. Please wait a moment before trying again.';
+    } else if (err.statusCode === 500 || err.statusCode === 503) {
+      statusCode = 503;
+      message = 'Code execution service is temporarily unavailable. Please try again later.';
+    }
+    
+    res.status(statusCode).json({ 
+      success: false, 
+      message,
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// POST run code (without submitting)
+router.post("/:id/run", protect, async (req, res) => {
+  try {
+    const { code, language, stdin = '' } = req.body;
+    const problemId = req.params.id;
+
+    if (!code || !language) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Code and language are required" 
+      });
+    }
+
+    const problem = await CodingProblem.findById(problemId);
+    if (!problem || !problem.isActive) {
+      return res.status(404).json({ success: false, message: "Problem not found" });
+    }
+
+    // Use first test case input if no stdin provided
+    const input = stdin || (problem.testCases?.[0]?.input || '');
+    
+    // Execute code using Judge0
+    const result = await judge0Run({ sourceCode: code, language, stdin: input });
+    
+    const output = {
+      stdout: (result.stdout || '').trim(),
+      stderr: (result.stderr || '').trim(),
+      compile_output: (result.compile_output || '').trim(),
+      message: (result.message || '').trim(),
+      status: result.status?.description || 'Unknown',
+      time: result.time,
+      memory: result.memory
+    };
+
+    return res.json({ success: true, data: output });
+  } catch (err) {
+    console.error('Judge0 run error:', err);
+    
+    // Provide better error messages based on status code
+    let statusCode = 500;
+    let message = err.message || 'Failed to execute code';
+    
+    if (err.statusCode === 400) {
+      statusCode = 400;
+      message = err.message || 'Invalid code execution request. Please check code format and try again.';
+    } else if (err.statusCode === 401) {
+      statusCode = 401;
+      message = err.message || 'Invalid Judge0 API credentials. Please update server configuration.';
+    } else if (err.statusCode === 403) {
+      statusCode = 403;
+      message = 'Code execution service is not available. Please contact administrator.';
+    } else if (err.statusCode === 429) {
+      statusCode = 429;
+      message = 'Too many requests. Please wait a moment before trying again.';
+    } else if (err.statusCode === 500 || err.statusCode === 503) {
+      statusCode = 503;
+      message = 'Code execution service is temporarily unavailable. Please try again later.';
+    }
+    
+    res.status(statusCode).json({ 
+      success: false, 
+      message,
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
