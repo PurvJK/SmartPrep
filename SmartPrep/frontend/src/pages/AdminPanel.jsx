@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { format } from 'date-fns';
 import Navbar from '@/components/Layout/Navbar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,9 +8,13 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
-import { Users, BookOpen, Brain, Plus, Upload, X, Save, Edit, Trash2, Bold, Italic, Underline, List, Type, Code, Minus, Plus as PlusIcon, MessageSquare, Terminal } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Progress } from '@/components/ui/progress';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Users, BookOpen, Brain, Plus, Upload, X, Save, Edit, Trash2, Bold, Italic, Underline, List, Type, Code, Minus, Plus as PlusIcon, MessageSquare, Terminal, Check, Trophy, CalendarDays, ChevronDown } from 'lucide-react';
+import { read, write, utils } from 'xlsx';
 import { Switch } from '@/components/ui/switch';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import api from '@/services/api';
@@ -30,6 +35,92 @@ const initialQuizForm = {
   description: '',
   tags: '',
   isPublished: true
+};
+
+const normalizeHeader = (header) =>
+  header?.toString().trim().replace(/\s+/g, ' ').toLowerCase();
+
+const COMPETITION_HOURS = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0'));
+const COMPETITION_MINUTES = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'];
+const COMPETITION_PERIODS = ['AM', 'PM'];
+
+const formatCompetitionDateLabel = (value) => {
+  if (!value) return 'Pick a date';
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return 'Pick a date';
+  return format(date, 'PPP');
+};
+
+const splitDateTimeForForm = (value) => {
+  if (!value) return { date: '', time: '' };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { date: '', time: '' };
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours24 = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 || 12;
+
+  return {
+    date: `${year}-${month}-${day}`,
+    hour: String(hours12).padStart(2, '0'),
+    minute: minutes,
+    period
+  };
+};
+
+const buildCompetitionDateTime = (dateValue, hourValue, minuteValue, periodValue) => {
+  if (!dateValue || !hourValue || !minuteValue || !periodValue) return null;
+
+  const hour = Number(hourValue);
+  if (Number.isNaN(hour)) return null;
+
+  let hours24 = hour % 12;
+  if (periodValue === 'PM') {
+    hours24 += 12;
+  }
+  if (periodValue === 'AM' && hour === 12) {
+    hours24 = 0;
+  }
+
+  const timestamp = new Date(`${dateValue}T00:00:00`);
+  timestamp.setHours(hours24, Number(minuteValue), 0, 0);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp;
+};
+
+const getDefaultCompetitionForm = () => {
+  const now = new Date();
+  const roundedMinutes = Math.round(now.getMinutes() / 5) * 5;
+  if (roundedMinutes === 60) {
+    now.setHours(now.getHours() + 1, 0, 0, 0);
+  } else {
+    now.setMinutes(roundedMinutes, 0, 0);
+  }
+
+  const date = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const hours24 = now.getHours();
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hour12 = hours24 % 12 || 12;
+
+  return {
+    title: '',
+    description: '',
+    startDate: date,
+    startHour: String(hour12).padStart(2, '0'),
+    startMinute: String(now.getMinutes()).padStart(2, '0'),
+    startPeriod: period,
+    endDate: date,
+    endHour: String(hour12).padStart(2, '0'),
+    endMinute: String(now.getMinutes()).padStart(2, '0'),
+    endPeriod: period,
+    durationMinutes: 60,
+    tags: '',
+    relatedQuizzes: [],
+    isPublished: true
+  };
 };
 
 const AdminPanel = () => {
@@ -60,7 +151,29 @@ const AdminPanel = () => {
   const [quizzesLoading, setQuizzesLoading] = useState(false);
   const [quizError, setQuizError] = useState('');
   const [quizSaving, setQuizSaving] = useState(false);
-  
+  const [bulkImportFile, setBulkImportFile] = useState(null);
+  const [bulkImportErrors, setBulkImportErrors] = useState([]);
+  const [bulkImportPreview, setBulkImportPreview] = useState([]);
+  const [bulkImportQuestions, setBulkImportQuestions] = useState([]);
+  const [bulkImportReadyCount, setBulkImportReadyCount] = useState(0);
+  const [bulkImportStatus, setBulkImportStatus] = useState('idle');
+  const [bulkImportProgress, setBulkImportProgress] = useState(0);
+  const [bulkImportSuccess, setBulkImportSuccess] = useState(null);
+  const [bulkImportQuizTitle, setBulkImportQuizTitle] = useState('Imported Questions');
+  const [bulkImportCategory, setBulkImportCategory] = useState('DSA');
+  const [bulkImportDifficulty, setBulkImportDifficulty] = useState('Medium');
+  const [bulkImportTimeLimit, setBulkImportTimeLimit] = useState(10);
+  const [bulkImportDescription, setBulkImportDescription] = useState('Bulk imported questions');
+  const [bulkImportTags, setBulkImportTags] = useState('imported');
+  const [bulkImportPublished, setBulkImportPublished] = useState(true);
+
+  const [competitions, setCompetitions] = useState([]);
+  const [competitionsLoading, setCompetitionsLoading] = useState(false);
+  const [competitionsError, setCompetitionsError] = useState('');
+  const [competitionForm, setCompetitionForm] = useState(() => getDefaultCompetitionForm());
+  const [competitionEditingId, setCompetitionEditingId] = useState(null);
+  const [competitionSaving, setCompetitionSaving] = useState(false);
+
   // Interview Questions state
   const [interviewQuestions, setInterviewQuestions] = useState([]);
   const [interviewLoading, setInterviewLoading] = useState(false);
@@ -104,6 +217,20 @@ const AdminPanel = () => {
     memoryLimit: 128
   });
 
+  const loadCompetitions = useCallback(async () => {
+    try {
+      setCompetitionsLoading(true);
+      setCompetitionsError('');
+      const res = await api.listCompetitions({ includeUnpublished: true });
+      const list = Array.isArray(res) ? res : (res.data || []);
+      setCompetitions(list);
+    } catch (error) {
+      setCompetitionsError(error.message || 'Failed to load competitions');
+    } finally {
+      setCompetitionsLoading(false);
+    }
+  }, []);
+
   const loadQuizzes = useCallback(async () => {
     try {
       setQuizzesLoading(true);
@@ -118,6 +245,280 @@ const AdminPanel = () => {
     }
   }, []);
 
+  const downloadBulkTemplate = () => {
+    const headers = [
+      'Question',
+      'Option A',
+      'Option B',
+      'Option C',
+      'Option D',
+      'Correct Answer',
+      'Explanation',
+      'Marks',
+      'Negative Marks',
+      'Difficulty',
+      'Subject',
+      'Topic',
+      'Question Type'
+    ];
+    const sample = [
+      'Which data structure follows LIFO?',
+      'Queue',
+      'Stack',
+      'Graph',
+      'Tree',
+      'B',
+      'Stack follows LIFO.',
+      '1',
+      '0.25',
+      'Easy',
+      'DSA',
+      'Stack',
+      'MCQ'
+    ];
+    const workbook = utils.book_new();
+    const worksheet = utils.aoa_to_sheet([headers, sample]);
+    utils.book_append_sheet(workbook, worksheet, 'Template');
+    const wbout = write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'smartprep-bulk-import-template.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleBulkFileSelection = (file) => {
+    setBulkImportFile(file);
+    setBulkImportErrors([]);
+    setBulkImportPreview([]);
+    setBulkImportReadyCount(0);
+    setBulkImportStatus('idle');
+    setBulkImportProgress(0);
+    setBulkImportSuccess(null);
+  };
+
+  const handleBulkFileInput = (event) => {
+    const file = event.target.files?.[0];
+    if (file) handleBulkFileSelection(file);
+  };
+
+  const handleBulkDrop = (event) => {
+    event.preventDefault();
+    const file = event.dataTransfer.files?.[0];
+    if (file) handleBulkFileSelection(file);
+  };
+
+  const handleBulkValidate = async () => {
+    const errors = [];
+    if (!bulkImportFile) {
+      errors.push('Please select an Excel file to validate.');
+    } else {
+      const name = bulkImportFile.name.toLowerCase();
+      if (!name.endsWith('.xlsx')) {
+        errors.push('File must be an .xlsx document.');
+      }
+      if (bulkImportFile.size > 10 * 1024 * 1024) {
+        errors.push('File must be smaller than 10 MB.');
+      }
+    }
+
+    if (errors.length) {
+      setBulkImportErrors(errors);
+      return;
+    }
+
+    try {
+      const data = await bulkImportFile.arrayBuffer();
+      const workbook = read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const rawRows = utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+      if (rawRows.length < 2) {
+        setBulkImportErrors(['The Excel file must contain headers and at least one question row.']);
+        return;
+      }
+
+      const headers = rawRows[0].map((header) => normalizeHeader(header));
+      const requiredHeaders = [
+        'question',
+        'option a',
+        'option b',
+        'option c',
+        'option d',
+        'correct answer',
+        'explanation',
+        'marks',
+        'negative marks',
+        'difficulty',
+        'subject',
+        'topic',
+        'question type'
+      ];
+
+      const missing = requiredHeaders.filter((header) => !headers.includes(header));
+      if (missing.length) {
+        setBulkImportErrors([`Missing required columns: ${missing.join(', ')}`]);
+        return;
+      }
+
+      const headerIndex = headers.reduce((acc, header, index) => {
+        acc[header] = index;
+        return acc;
+      }, {});
+
+      const parsedQuestions = [];
+      const previewRows = [];
+      const rowErrors = [];
+
+      rawRows.slice(1).forEach((row, rowIndex) => {
+        const rowNum = rowIndex + 2;
+        const question = row[headerIndex['question']]?.toString().trim();
+        const optionA = row[headerIndex['option a']]?.toString().trim();
+        const optionB = row[headerIndex['option b']]?.toString().trim();
+        const optionC = row[headerIndex['option c']]?.toString().trim();
+        const optionD = row[headerIndex['option d']]?.toString().trim();
+        const correctAnswerRaw = row[headerIndex['correct answer']]?.toString().trim();
+        const correctAnswerValue = correctAnswerRaw?.toUpperCase();
+        const explanation = row[headerIndex['explanation']]?.toString().trim();
+        const marks = row[headerIndex['marks']]?.toString().trim();
+        const difficulty = row[headerIndex['difficulty']]?.toString().trim();
+        const subject = row[headerIndex['subject']]?.toString().trim();
+        const topic = row[headerIndex['topic']]?.toString().trim();
+        const questionType = row[headerIndex['question type']]?.toString().trim();
+
+        if (!question) {
+          rowErrors.push(`Row ${rowNum}: Question is empty`);
+        }
+        if (!optionA) rowErrors.push(`Row ${rowNum}: Option A is missing`);
+        if (!optionB) rowErrors.push(`Row ${rowNum}: Option B is missing`);
+        if (!optionC) rowErrors.push(`Row ${rowNum}: Option C is missing`);
+        if (!optionD) rowErrors.push(`Row ${rowNum}: Option D is missing`);
+        const correctAnswer = ['A', 'B', 'C', 'D'].includes(correctAnswerValue)
+          ? correctAnswerValue
+          : ['1', '2', '3', '4'].includes(correctAnswerRaw)
+            ? ['A', 'B', 'C', 'D'][Number(correctAnswerRaw) - 1]
+            : '';
+
+        if (!['A', 'B', 'C', 'D'].includes(correctAnswer)) {
+          rowErrors.push(`Row ${rowNum}: Correct Answer should be A, B, C, D, or 1-4`);
+        }
+        if (marks === '' || Number.isNaN(Number(marks))) {
+          rowErrors.push(`Row ${rowNum}: Marks must be numeric`);
+        }
+        if (!['Easy', 'Medium', 'Hard'].includes(difficulty)) {
+          rowErrors.push(`Row ${rowNum}: Difficulty must be Easy, Medium or Hard`);
+        }
+        if (!questionType) {
+          rowErrors.push(`Row ${rowNum}: Question Type is required`);
+        }
+
+        if (question && optionA && optionB && optionC && optionD && ['A', 'B', 'C', 'D'].includes(correctAnswer) && !Number.isNaN(Number(marks)) && ['Easy', 'Medium', 'Hard'].includes(difficulty) && questionType) {
+          const correctMap = { A: 0, B: 1, C: 2, D: 3 };
+          parsedQuestions.push({
+            question,
+            options: [optionA, optionB, optionC, optionD],
+            correctAnswer: correctMap[correctAnswer],
+            explanation,
+            marks: Number(marks),
+            negativeMarks: Number(row[headerIndex['negative marks']] || 0),
+            difficulty,
+            subject,
+            topic,
+            questionType
+          });
+
+          previewRows.push({
+            question,
+            correctAnswer,
+            marks,
+            difficulty,
+            topic,
+            questionType
+          });
+        }
+      });
+
+      if (rowErrors.length) {
+        setBulkImportErrors(rowErrors);
+        setBulkImportQuestions([]);
+        setBulkImportPreview([]);
+        setBulkImportReadyCount(0);
+        return;
+      }
+
+      const uniqueQuestions = [];
+      const questionTextSet = new Set();
+      parsedQuestions.forEach((q) => {
+        if (!questionTextSet.has(q.question)) {
+          questionTextSet.add(q.question);
+          uniqueQuestions.push(q);
+        }
+      });
+
+      setBulkImportQuestions(uniqueQuestions);
+      setBulkImportPreview(previewRows);
+      setBulkImportReadyCount(uniqueQuestions.length);
+      setBulkImportStatus('validated');
+      setBulkImportErrors([]);
+      setBulkImportSuccess(null);
+    } catch (error) {
+      setBulkImportErrors([error.message || 'Failed to read Excel file.']);
+    }
+  };
+
+  const handleImportQuestions = async () => {
+    if (!bulkImportQuestions.length) {
+      setBulkImportErrors(['Please validate an Excel file before importing.']);
+      return;
+    }
+
+    setBulkImportErrors([]);
+    setBulkImportStatus('importing');
+    setBulkImportProgress(10);
+    setBulkImportSuccess(null);
+
+    try {
+      const payload = {
+        title: bulkImportQuizTitle,
+        category: bulkImportCategory,
+        difficulty: bulkImportDifficulty,
+        description: bulkImportDescription,
+        timeLimit: Math.max(60, Number(bulkImportTimeLimit || 10) * 60),
+        tags: bulkImportTags.split(',').map((tag) => tag.trim()).filter(Boolean),
+        isPublished: bulkImportPublished,
+        questions: bulkImportQuestions.map((question) => ({
+          question: question.question,
+          options: question.options,
+          correctAnswer: question.correctAnswer,
+          explanation: question.explanation || ''
+        }))
+      };
+
+      const importCount = payload.questions.length;
+      const step = Math.max(1, Math.floor(80 / importCount));
+      let progressValue = 10;
+      const interval = setInterval(() => {
+        progressValue = Math.min(progressValue + step, 90);
+        setBulkImportProgress(progressValue);
+      }, 150);
+
+      const response = await api.createQuiz(payload);
+      clearInterval(interval);
+      setBulkImportProgress(100);
+      setBulkImportStatus('completed');
+      setBulkImportSuccess({ imported: importCount, failed: 0, quizId: response.data._id, quiz: response.data });
+      await loadQuizzes();
+      handleEditQuiz(response.data);
+    } catch (error) {
+      setBulkImportStatus('validated');
+      setBulkImportErrors([error.message || 'Import failed.']);
+      setBulkImportProgress(0);
+    }
+  };
+
   useEffect(() => {
     const userData = localStorage.getItem('user');
     if (userData) {
@@ -130,6 +531,7 @@ const AdminPanel = () => {
     const path = location.pathname;
     if (path.includes('/admin/content')) setActiveTab('content');
     else if (path.includes('/admin/quizzes')) setActiveTab('quizzes');
+    else if (path.includes('/admin/competitions')) setActiveTab('competitions');
     else if (path.includes('/admin/interviews')) setActiveTab('interviews');
     else if (path.includes('/admin/coding')) setActiveTab('coding');
     else if (path.includes('/admin/users')) setActiveTab('users');
@@ -183,6 +585,9 @@ const AdminPanel = () => {
   const [usersList, setUsersList] = useState([]);
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState('');
+  const [editingUser, setEditingUser] = useState(null);
+  const [editingUserForm, setEditingUserForm] = useState(null);
+  const [savingUser, setSavingUser] = useState(false);
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -207,7 +612,12 @@ const AdminPanel = () => {
     if (activeTab === 'quizzes') {
       loadQuizzes();
     }
-  }, [activeTab, loadQuizzes]);
+
+    if (activeTab === 'competitions') {
+      loadCompetitions();
+      loadQuizzes();
+    }
+  }, [activeTab, loadCompetitions, loadQuizzes]);
 
   // Load interview questions
   const loadInterviewQuestions = useCallback(async () => {
@@ -660,6 +1070,133 @@ const AdminPanel = () => {
     }
   };
 
+  const resetCompetitionForm = () => {
+    setCompetitionForm(getDefaultCompetitionForm());
+    setCompetitionEditingId(null);
+  };
+
+  const handleEditCompetition = (competition) => {
+    const startParts = splitDateTimeForForm(competition.startDate);
+    const endParts = splitDateTimeForForm(competition.endDate);
+    setCompetitionEditingId(competition._id);
+    setCompetitionForm({
+      title: competition.title || '',
+      description: competition.description || '',
+      startDate: startParts.date,
+      startHour: startParts.hour || '',
+      startMinute: startParts.minute || '',
+      startPeriod: startParts.period || 'AM',
+      endDate: endParts.date,
+      endHour: endParts.hour || '',
+      endMinute: endParts.minute || '',
+      endPeriod: endParts.period || 'AM',
+      durationMinutes: competition.durationMinutes || 60,
+      tags: Array.isArray(competition.tags) ? competition.tags.join(', ') : '',
+      relatedQuizzes: Array.isArray(competition.relatedQuizzes)
+        ? competition.relatedQuizzes.map((quiz) => quiz._id || quiz)
+        : [],
+      isPublished: competition.isPublished !== undefined ? competition.isPublished : true
+    });
+    document.querySelector('[data-competition-form]')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleSaveCompetition = async () => {
+    if (
+      !competitionForm.title.trim() ||
+      !competitionForm.startDate ||
+      !competitionForm.startHour ||
+      !competitionForm.startMinute ||
+      !competitionForm.startPeriod ||
+      !competitionForm.endDate ||
+      !competitionForm.endHour ||
+      !competitionForm.endMinute ||
+      !competitionForm.endPeriod
+    ) {
+      toast({
+        title: 'Validation Error',
+        description: 'Title, start date, start time, end date, and end time are required',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const start = buildCompetitionDateTime(
+      competitionForm.startDate,
+      competitionForm.startHour,
+      competitionForm.startMinute,
+      competitionForm.startPeriod
+    );
+    const end = buildCompetitionDateTime(
+      competitionForm.endDate,
+      competitionForm.endHour,
+      competitionForm.endMinute,
+      competitionForm.endPeriod
+    );
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || start >= end) {
+      toast({
+        title: 'Validation Error',
+        description: 'Start date must be before end date',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    try {
+      setCompetitionSaving(true);
+      const payload = {
+        title: competitionForm.title.trim(),
+        description: competitionForm.description.trim(),
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        durationMinutes: Number(competitionForm.durationMinutes) || 60,
+        tags: competitionForm.tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        relatedQuizzes: competitionForm.relatedQuizzes,
+        isPublished: competitionForm.isPublished
+      };
+
+      if (competitionEditingId) {
+        await api.updateCompetition(competitionEditingId, payload);
+        toast({ title: 'Updated', description: 'Competition updated successfully.' });
+      } else {
+        await api.createCompetition(payload);
+        toast({ title: 'Created', description: 'Competition created successfully.' });
+      }
+
+      resetCompetitionForm();
+      await loadCompetitions();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to save competition',
+        variant: 'destructive'
+      });
+    } finally {
+      setCompetitionSaving(false);
+    }
+  };
+
+  const handleDeleteCompetition = async (competitionId) => {
+    if (!confirm('Are you sure you want to delete this competition?')) return;
+    try {
+      await api.deleteCompetition(competitionId);
+      toast({ title: 'Deleted', description: 'Competition deleted successfully.' });
+      await loadCompetitions();
+      if (competitionEditingId === competitionId) {
+        resetCompetitionForm();
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete competition',
+        variant: 'destructive'
+      });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar user={user} onLogout={() => setUser(null)} />
@@ -671,62 +1208,260 @@ const AdminPanel = () => {
         </div>
 
         {activeTab === 'users' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>User Management</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {usersLoading && <p className="text-sm text-muted-foreground">Loading users...</p>}
-              {usersError && <p className="text-sm text-red-600">{usersError}</p>}
-              {!usersLoading && !usersError && (
-                <div className="space-y-4">
-                  {usersList.map(u => (
-                    <div key={u._id} className="flex items-center justify-between p-4 border rounded-lg">
-                      <div>
-                        <p className="font-medium">{u.name}</p>
-                        <p className="text-sm text-muted-foreground">{u.email}</p>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <span className="px-2 py-1 bg-primary/10 text-primary rounded text-sm">
-                          {u.role}
-                        </span>
-                        <Button size="sm" variant="outline">Edit</Button>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={async () => {
-                            if (!confirm(`Are you sure you want to delete user "${u.name}" (${u.email})? This action cannot be undone.`)) return;
-                            try {
-                              await api.deleteUser(u._id);
-                              toast({ 
-                                title: 'Success', 
-                                description: 'User deleted successfully.' 
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle>User Management</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {usersLoading && <p className="text-sm text-muted-foreground">Loading users...</p>}
+                {usersError && <p className="text-sm text-red-600">{usersError}</p>}
+                {!usersLoading && !usersError && (
+                  <div className="space-y-4">
+                    {usersList.map(u => (
+                      <div key={u._id} className="flex items-center justify-between p-4 border rounded-lg">
+                        <div>
+                          <p className="font-medium">{u.name}</p>
+                          <p className="text-sm text-muted-foreground">{u.email}</p>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <span className="px-2 py-1 bg-primary/10 text-primary rounded text-sm">
+                            {u.role}
+                          </span>
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            onClick={() => {
+                              setEditingUser(u);
+                              setEditingUserForm({
+                                name: u.name,
+                                phone: u.profile?.phone || '',
+                                college: u.profile?.college || '',
+                                branch: u.profile?.branch || '',
+                                year: u.profile?.year || '',
+                                studentId: u.profile?.studentId || '',
+                                department: u.profile?.department || '',
+                                class: u.profile?.class || '',
+                                division: u.profile?.division || '',
+                                skills: u.profile?.skills?.join(', ') || ''
                               });
-                              // Refresh users list
-                              const res = await api.getAllUsers(1, 50);
-                              const list = res.data?.users || [];
-                              setUsersList(list);
-                            } catch (e) {
-                              toast({ 
-                                title: 'Error', 
-                                description: e.message || 'Failed to delete user', 
-                                variant: 'destructive' 
-                              });
-                            }
-                          }}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                            }}
+                          >
+                            <Edit className="h-3 w-3 mr-1" /> Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={async () => {
+                              if (!confirm(`Are you sure you want to delete user "${u.name}" (${u.email})? This action cannot be undone.`)) return;
+                              try {
+                                await api.deleteUser(u._id);
+                                toast({ 
+                                  title: 'Success', 
+                                  description: 'User deleted successfully.' 
+                                });
+                                // Refresh users list
+                                const res = await api.getAllUsers(1, 50);
+                                const list = res.data?.users || [];
+                                setUsersList(list);
+                              } catch (e) {
+                                toast({ 
+                                  title: 'Error', 
+                                  description: e.message || 'Failed to delete user', 
+                                  variant: 'destructive' 
+                                });
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                  {usersList.length === 0 && (
-                    <p className="text-sm text-muted-foreground">No users found.</p>
-                  )}
+                    ))}
+                    {usersList.length === 0 && (
+                      <p className="text-sm text-muted-foreground">No users found.</p>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Edit User Modal */}
+            {editingUser && editingUserForm && (
+              <Card className="mt-6">
+                <CardHeader>
+                  <CardTitle>Edit User: {editingUser.name}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-name">Name</Label>
+                    <Input
+                      id="edit-name"
+                      value={editingUserForm.name}
+                      onChange={(e) => setEditingUserForm({ ...editingUserForm, name: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-phone">Phone</Label>
+                    <Input
+                      id="edit-phone"
+                      value={editingUserForm.phone}
+                      onChange={(e) => setEditingUserForm({ ...editingUserForm, phone: e.target.value })}
+                    />
                 </div>
-              )}
-            </CardContent>
-          </Card>
+
+                {editingUser.role === 'student' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-studentId">Student ID</Label>
+                      <Input
+                        id="edit-studentId"
+                        value={editingUserForm.studentId}
+                        onChange={(e) => setEditingUserForm({ ...editingUserForm, studentId: e.target.value })}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-year">Academic Year</Label>
+                      <Select 
+                        value={editingUserForm.year} 
+                        onValueChange={(value) => setEditingUserForm({ ...editingUserForm, year: value })}
+                      >
+                        <SelectTrigger id="edit-year">
+                          <SelectValue placeholder="Select year" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['1', '2', '3', '4'].map((y) => (
+                            <SelectItem key={y} value={y}>{y}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-department">Department</Label>
+                      <Select 
+                        value={editingUserForm.department} 
+                        onValueChange={(value) => setEditingUserForm({ ...editingUserForm, department: value })}
+                      >
+                        <SelectTrigger id="edit-department">
+                          <SelectValue placeholder="Select department" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['CE', 'CSE', 'IT'].map((d) => (
+                            <SelectItem key={d} value={d}>{d}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-division">Division</Label>
+                      <Select 
+                        value={editingUserForm.division} 
+                        onValueChange={(value) => setEditingUserForm({ ...editingUserForm, division: value })}
+                      >
+                        <SelectTrigger id="edit-division">
+                          <SelectValue placeholder="Select division" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['A', 'B', 'C', 'D'].map((div) => (
+                            <SelectItem key={div} value={div}>{div}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-skills">Skills (comma-separated)</Label>
+                  <Input
+                    id="edit-skills"
+                    value={editingUserForm.skills}
+                    onChange={(e) => setEditingUserForm({ ...editingUserForm, skills: e.target.value })}
+                    placeholder="e.g., JavaScript, React, Node.js"
+                  />
+                </div>
+
+                <div className="flex gap-2 justify-end">
+                  <Button 
+                    variant="outline"
+                    onClick={() => {
+                      setEditingUser(null);
+                      setEditingUserForm(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      if (!editingUserForm.name || editingUserForm.name.trim() === '') {
+                        toast({
+                          title: 'Validation Error',
+                          description: 'Name is required',
+                          variant: 'destructive'
+                        });
+                        return;
+                      }
+
+                      try {
+                        setSavingUser(true);
+                        const profileData = {
+                          name: editingUserForm.name,
+                          phone: editingUserForm.phone,
+                          college: editingUserForm.college,
+                          branch: editingUserForm.branch,
+                          year: editingUserForm.year,
+                          studentId: editingUserForm.studentId,
+                          department: editingUserForm.department,
+                          class: editingUserForm.class,
+                          division: editingUserForm.division,
+                          skills: editingUserForm.skills.split(',').map(s => s.trim()).filter(s => s)
+                        };
+
+                        const response = await api.updateUserProfile(editingUser._id, profileData);
+                        
+                        if (response.success) {
+                          toast({
+                            title: 'Success',
+                            description: 'User profile updated successfully'
+                          });
+                          
+                          // Refresh users list
+                          const res = await api.getAllUsers(1, 50);
+                          setUsersList(res.data?.users || []);
+                          
+                          setEditingUser(null);
+                          setEditingUserForm(null);
+                        } else {
+                          const errorMsg = response.error || (response.errors && response.errors.join(', ')) || response.message || 'Failed to update user profile';
+                          toast({
+                            title: 'Error',
+                            description: errorMsg,
+                            variant: 'destructive'
+                          });
+                        }
+                      } catch (error) {
+                        toast({
+                          title: 'Error',
+                          description: error.message || 'Failed to update user profile',
+                          variant: 'destructive'
+                        });
+                      } finally {
+                        setSavingUser(false);
+                      }
+                    }}
+                    disabled={savingUser}
+                  >
+                    {savingUser ? 'Saving...' : 'Save Changes'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+            )}
+          </>
         )}
 
         {activeTab === 'content' && (
@@ -1608,50 +2343,163 @@ const AdminPanel = () => {
         )}
 
         {activeTab === 'quizzes' && (
-          <div className="h-[calc(100vh-200px)]">
-            <ResizablePanelGroup direction="horizontal" className="h-full">
-              <ResizablePanel defaultSize={50} minSize={30} maxSize={70}>
-                <div className="h-full overflow-y-auto pr-4">
-                  <Card data-quiz-form className="h-full">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle>{quizEditingId ? 'Edit Quiz' : 'Create Quiz'}</CardTitle>
-                  {quizEditingId && (
-                    <Button variant="outline" size="sm" onClick={resetQuizForm}>
-                      Cancel Edit
-                    </Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
+          <div className="h-[calc(100vh-200px)] overflow-y-auto space-y-6">
+            <Card className="border-slate-200 bg-white shadow-sm">
+              <CardContent className="flex flex-col gap-4 py-6 px-5">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <Label htmlFor="quiz-title">Quiz Topic *</Label>
-                    <Input
-                      id="quiz-title"
-                      placeholder="e.g., Data Structures Basics"
-                      value={quizForm.title}
-                      onChange={(e) => setQuizForm(v => ({ ...v, title: e.target.value }))}
-                    />
+                    <CardTitle className="text-lg">Question Management</CardTitle>
+                    <p className="text-sm text-slate-500">Review quizzes first, import questions next, and use manual entry last.</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="space-y-6">
+              <Card className="border-slate-200 bg-white shadow-sm">
+                <CardHeader>
+                  <CardTitle>Existing Quizzes</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {quizzesLoading && (
+                    <p className="text-sm text-muted-foreground">Loading quizzes...</p>
+                  )}
+                  {quizError && (
+                    <p className="text-sm text-red-600">{quizError}</p>
+                  )}
+                  {!quizzesLoading && !quizError && (
+                    <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+                      {quizzesList.map((quiz) => (
+                        <div key={quiz._id} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex-1 space-y-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="font-medium text-base">{quiz.title}</p>
+                                <Badge variant="outline">{quiz.category}</Badge>
+                                <Badge
+                                  variant="outline"
+                                  className={
+                                    quiz.difficulty === 'Easy'
+                                      ? 'bg-green-100 text-green-800'
+                                      : quiz.difficulty === 'Medium'
+                                        ? 'bg-yellow-100 text-yellow-800'
+                                        : 'bg-red-100 text-red-800'
+                                  }
+                                >
+                                  {quiz.difficulty}
+                                </Badge>
+                                <Badge variant={quiz.isPublished ? 'default' : 'outline'}>
+                                  {quiz.isPublished ? 'Published' : 'Draft'}
+                                </Badge>
+                              </div>
+                              {quiz.description && (
+                                <p className="text-sm text-muted-foreground">{quiz.description}</p>
+                              )}
+                              <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
+                                <span>Time: {Math.round((quiz.timeLimit || 600) / 60)} min</span>
+                                <span>Questions: {quiz.questions?.length || 0}</span>
+                                {Array.isArray(quiz.tags) && quiz.tags.length > 0 && (
+                                  <span>Tags: {quiz.tags.join(', ')}</span>
+                                )}
+                                <span>
+                                  Updated: {quiz.updatedAt ? new Date(quiz.updatedAt).toLocaleDateString() : '-'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button size="sm" variant="outline" onClick={() => handleEditQuiz(quiz)}>
+                                <Edit className="h-3 w-3 mr-1" />
+                                Edit
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => handleDeleteQuiz(quiz._id)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {quizzesList.length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-8">
+                          No quizzes yet. Create your first quiz!
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="border-slate-200 bg-white shadow-sm">
+                <CardHeader className="border-b border-slate-200 bg-slate-50 px-6 py-5">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <CardTitle>Bulk Import Questions</CardTitle>
+                      <p className="text-sm text-slate-500">Import multiple questions using an Excel (.xlsx) file.</p>
+                    </div>
+                    <Button variant="outline" onClick={downloadBulkTemplate}>
+                      Download Excel Template
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-6 p-6">
+                  <div
+                    className="group flex min-h-[220px] flex-col items-center justify-center rounded-3xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 text-center transition hover:border-blue-400 hover:bg-slate-100"
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={handleBulkDrop}
+                  >
+                    <Upload className="mb-4 h-12 w-12 text-blue-600" />
+                    <p className="text-lg font-semibold text-slate-900">Drag & Drop Excel File Here</p>
+                    <p className="mt-2 text-sm text-slate-500">OR</p>
+                    <label className="mt-4 inline-flex items-center rounded-full border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 cursor-pointer">
+                      Choose File
+                      <input type="file" accept=".xlsx" className="hidden" onChange={handleBulkFileInput} />
+                    </label>
+                    {bulkImportFile && (
+                      <p className="mt-3 text-sm text-slate-600">Selected file: <span className="font-semibold">{bulkImportFile.name}</span></p>
+                    )}
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="quiz-category">Subject *</Label>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <p className="mb-2 font-semibold text-slate-900">Supported Format</p>
+                      <p className="text-sm text-slate-600">✓ .xlsx</p>
+                    </div>
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <p className="mb-2 font-semibold text-slate-900">Maximum Size</p>
+                      <p className="text-sm text-slate-600">10 MB</p>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <Label htmlFor="bulk-quiz-title">Quiz Title</Label>
                       <Input
-                        id="quiz-category"
-                        placeholder="e.g., DSA, OS, Aptitude"
-                        value={quizForm.category}
-                        onChange={(e) => setQuizForm(v => ({ ...v, category: e.target.value }))}
+                        id="bulk-quiz-title"
+                        value={bulkImportQuizTitle}
+                        onChange={(e) => setBulkImportQuizTitle(e.target.value)}
+                        placeholder="Imported Questions"
                       />
                     </div>
-                    <div>
-                      <Label htmlFor="quiz-difficulty">Difficulty</Label>
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <Label htmlFor="bulk-category">Subject</Label>
+                      <Input
+                        id="bulk-category"
+                        value={bulkImportCategory}
+                        onChange={(e) => setBulkImportCategory(e.target.value)}
+                        placeholder="DSA"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <Label htmlFor="bulk-difficulty">Difficulty</Label>
                       <Select
-                        value={quizForm.difficulty}
-                        onValueChange={(value) => setQuizForm(v => ({ ...v, difficulty: value }))}
+                        value={bulkImportDifficulty}
+                        onValueChange={(value) => setBulkImportDifficulty(value)}
                       >
-                        <SelectTrigger id="quiz-difficulty">
+                        <SelectTrigger id="bulk-difficulty">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -1661,233 +2509,700 @@ const AdminPanel = () => {
                         </SelectContent>
                       </Select>
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="quiz-time">Time Limit (minutes) *</Label>
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <Label htmlFor="bulk-time-limit">Time Limit (minutes)</Label>
                       <Input
-                        id="quiz-time"
+                        id="bulk-time-limit"
                         type="number"
                         min={1}
-                        value={quizForm.timeLimitMinutes}
-                        onChange={(e) => setQuizForm(v => ({ ...v, timeLimitMinutes: e.target.value }))}
+                        value={bulkImportTimeLimit}
+                        onChange={(e) => setBulkImportTimeLimit(e.target.value)}
                       />
                     </div>
-                    <div>
-                      <Label htmlFor="quiz-tags">Tags (comma separated)</Label>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <Label htmlFor="bulk-description">Description</Label>
+                      <Textarea
+                        id="bulk-description"
+                        value={bulkImportDescription}
+                        onChange={(e) => setBulkImportDescription(e.target.value)}
+                        rows={2}
+                      />
+                    </div>
+                    <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                      <Label htmlFor="bulk-tags">Tags</Label>
                       <Input
-                        id="quiz-tags"
-                        placeholder="e.g., arrays, searching"
-                        value={quizForm.tags}
-                        onChange={(e) => setQuizForm(v => ({ ...v, tags: e.target.value }))}
+                        id="bulk-tags"
+                        value={bulkImportTags}
+                        onChange={(e) => setBulkImportTags(e.target.value)}
+                        placeholder="imported, excel"
                       />
                     </div>
                   </div>
-
-                  <div>
-                    <Label htmlFor="quiz-description">Description</Label>
-                    <Textarea
-                      id="quiz-description"
-                      placeholder="Short description about the quiz"
-                      value={quizForm.description}
-                      onChange={(e) => setQuizForm(v => ({ ...v, description: e.target.value }))}
-                      rows={3}
-                    />
-                  </div>
-
-                  <div className="flex items-center space-x-3">
-                    <Switch
-                      id="quiz-published"
-                      checked={quizForm.isPublished}
-                      onCheckedChange={(checked) => setQuizForm(v => ({ ...v, isPublished: checked }))}
-                    />
-                    <Label htmlFor="quiz-published" className="text-sm">
-                      Publish quiz for students
-                    </Label>
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 border rounded-md">
-                    <div>
-                      <p className="text-sm font-medium text-muted-foreground">Total Questions</p>
-                      <p className="text-2xl font-semibold">{quizQuestions.length}</p>
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-center gap-3">
+                      <Switch
+                        id="bulk-published"
+                        checked={bulkImportPublished}
+                        onCheckedChange={(checked) => setBulkImportPublished(checked)}
+                      />
+                      <Label htmlFor="bulk-published" className="text-sm">
+                        Publish imported quiz immediately
+                      </Label>
                     </div>
-                    <Button variant="outline" size="sm" onClick={addQuizQuestion}>
-                      <PlusIcon className="h-4 w-4 mr-2" />
-                      Add Question
+                  </div>
+
+                  {bulkImportErrors.length > 0 && (
+                    <Card className="rounded-3xl border border-rose-200 bg-rose-50 p-4">
+                      <CardTitle className="text-base text-rose-700">Import Errors</CardTitle>
+                      <ul className="mt-3 space-y-2 text-sm text-rose-700">
+                        {bulkImportErrors.map((error, index) => (
+                          <li key={index}>• {error}</li>
+                        ))}
+                      </ul>
+                    </Card>
+                  )}
+
+                  <div className="flex items-center justify-between gap-4">
+                    <Button variant="outline" onClick={handleBulkValidate}>Validate File</Button>
+                    <Button onClick={handleImportQuestions} disabled={bulkImportStatus === 'importing' || bulkImportStatus === 'completed'}>
+                      {bulkImportStatus === 'importing' ? 'Importing...' : 'Import Questions'}
                     </Button>
                   </div>
 
-                  <div className="space-y-4">
-                    {quizQuestions.map((question, index) => (
-                      <Card key={index} className="border">
-                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                          <CardTitle className="text-base font-semibold">
-                            Question {index + 1}
-                          </CardTitle>
-                          {quizQuestions.length > 1 && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removeQuizQuestion(index)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          )}
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          <div>
-                            <Label htmlFor={`question-${index}`}>Question Text *</Label>
-                            <Textarea
-                              id={`question-${index}`}
-                              placeholder="Enter question"
-                              value={question.question}
-                              onChange={(e) => handleQuestionTextChange(index, e.target.value)}
-                              rows={3}
-                            />
-                          </div>
-
-                          <div className="space-y-3">
-                            <Label>Options *</Label>
-                            {question.options.map((option, optionIndex) => (
-                              <div key={optionIndex}>
-                                <Input
-                                  placeholder={`Option ${optionIndex + 1}`}
-                                  value={option}
-                                  onChange={(e) => handleOptionChange(index, optionIndex, e.target.value)}
-                                />
-                              </div>
+                  {bulkImportStatus === 'validated' && bulkImportPreview.length > 0 && (
+                    <Card className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="mb-4 flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-sm text-slate-500">{bulkImportReadyCount} Questions Ready To Import</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" onClick={() => handleBulkFileSelection(null)}>Cancel</Button>
+                          <Button onClick={handleImportQuestions}>Import Questions</Button>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white p-2">
+                        <table className="min-w-full text-left text-sm text-slate-700">
+                          <thead className="border-b bg-slate-100 text-slate-700">
+                            <tr>
+                              <th className="px-3 py-2">Question</th>
+                              <th className="px-3 py-2">Correct Answer</th>
+                              <th className="px-3 py-2">Marks</th>
+                              <th className="px-3 py-2">Difficulty</th>
+                              <th className="px-3 py-2">Topic</th>
+                              <th className="px-3 py-2">Type</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {bulkImportPreview.slice(0, 20).map((item, index) => (
+                              <tr key={index} className={index % 2 === 0 ? 'bg-slate-50' : ''}>
+                                <td className="px-3 py-2">{item.question}</td>
+                                <td className="px-3 py-2">{item.correctAnswer}</td>
+                                <td className="px-3 py-2">{item.marks}</td>
+                                <td className="px-3 py-2">{item.difficulty}</td>
+                                <td className="px-3 py-2">{item.topic}</td>
+                                <td className="px-3 py-2">{item.questionType}</td>
+                              </tr>
                             ))}
-                          </div>
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  )}
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <Label>Correct Option *</Label>
-                              <Select
-                                value={question.correctAnswer.toString()}
-                                onValueChange={(value) => handleCorrectAnswerChange(index, value)}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select correct option" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="0">Option 1</SelectItem>
-                                  <SelectItem value="1">Option 2</SelectItem>
-                                  <SelectItem value="2">Option 3</SelectItem>
-                                  <SelectItem value="3">Option 4</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div>
-                              <Label>Explanation (optional)</Label>
-                              <Textarea
-                                placeholder="Explain the correct answer"
-                                value={question.explanation}
-                                onChange={(e) => handleExplanationChange(index, e.target.value)}
-                                rows={2}
-                              />
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
+                  {bulkImportStatus === 'importing' && (
+                    <div className="space-y-3 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-sm font-semibold text-slate-900">Importing...</p>
+                      <Progress value={bulkImportProgress} />
+                      <p className="text-sm text-slate-600">{bulkImportProgress}%</p>
+                    </div>
+                  )}
 
-                  <div className="flex items-center space-x-2">
+                  {bulkImportStatus === 'completed' && bulkImportSuccess && (
+                    <Card className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="rounded-full bg-emerald-600 p-2 text-white">
+                          <Check className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <p className="font-semibold text-emerald-900">Import Completed Successfully</p>
+                          <p className="text-sm text-emerald-800">{bulkImportSuccess.imported} Questions Imported · {bulkImportSuccess.failed} Failed</p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <Button variant="outline" onClick={() => setBulkImportStatus('idle')}>Import Another File</Button>
+                        <Button onClick={() => {
+                          handleEditQuiz(bulkImportSuccess.quiz);
+                        }}>
+                          Edit Imported Quiz
+                        </Button>
+                      </div>
+                    </Card>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="border-slate-200 bg-white shadow-sm">
+                <CardHeader>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <CardTitle>Manual Entry</CardTitle>
+                      <p className="text-sm text-slate-500">Create or edit a quiz manually with the question composer.</p>
+                    </div>
                     {quizEditingId && (
-                      <Button variant="outline" onClick={resetQuizForm}>
-                        Cancel
+                      <Button variant="outline" size="sm" onClick={resetQuizForm}>
+                        Cancel Edit
                       </Button>
                     )}
-                    <Button onClick={handleSaveQuiz} disabled={quizSaving}>
-                      {quizSaving ? 'Saving...' : quizEditingId ? 'Update Quiz' : 'Create Quiz'}
-                    </Button>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <div>
+                      <Label htmlFor="quiz-title">Quiz Topic *</Label>
+                      <Input
+                        id="quiz-title"
+                        placeholder="e.g., Data Structures Basics"
+                        value={quizForm.title}
+                        onChange={(e) => setQuizForm(v => ({ ...v, title: e.target.value }))}
+                      />
+                    </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="quiz-category">Subject *</Label>
+                          <Input
+                            id="quiz-category"
+                            placeholder="e.g., DSA, OS, Aptitude"
+                            value={quizForm.category}
+                            onChange={(e) => setQuizForm(v => ({ ...v, category: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="quiz-difficulty">Difficulty</Label>
+                          <Select
+                            value={quizForm.difficulty}
+                            onValueChange={(value) => setQuizForm(v => ({ ...v, difficulty: value }))}
+                          >
+                            <SelectTrigger id="quiz-difficulty">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Easy">Easy</SelectItem>
+                              <SelectItem value="Medium">Medium</SelectItem>
+                              <SelectItem value="Hard">Hard</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="quiz-time">Time Limit (minutes) *</Label>
+                          <Input
+                            id="quiz-time"
+                            type="number"
+                            min={1}
+                            value={quizForm.timeLimitMinutes}
+                            onChange={(e) => setQuizForm(v => ({ ...v, timeLimitMinutes: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="quiz-tags">Tags (comma separated)</Label>
+                          <Input
+                            id="quiz-tags"
+                            placeholder="e.g., arrays, searching"
+                            value={quizForm.tags}
+                            onChange={(e) => setQuizForm(v => ({ ...v, tags: e.target.value }))}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label htmlFor="quiz-description">Description</Label>
+                        <Textarea
+                          id="quiz-description"
+                          placeholder="Short description about the quiz"
+                          value={quizForm.description}
+                          onChange={(e) => setQuizForm(v => ({ ...v, description: e.target.value }))}
+                          rows={3}
+                        />
+                      </div>
+
+                      <div className="flex items-center space-x-3">
+                        <Switch
+                          id="quiz-published"
+                          checked={quizForm.isPublished}
+                          onCheckedChange={(checked) => setQuizForm(v => ({ ...v, isPublished: checked }))}
+                        />
+                        <Label htmlFor="quiz-published" className="text-sm">
+                          Publish quiz for students
+                        </Label>
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 border rounded-md">
+                        <div>
+                          <p className="text-sm font-medium text-muted-foreground">Total Questions</p>
+                          <p className="text-2xl font-semibold">{quizQuestions.length}</p>
+                        </div>
+                        <Button variant="outline" size="sm" onClick={addQuizQuestion}>
+                          <PlusIcon className="h-4 w-4 mr-2" />
+                          Add Question
+                        </Button>
+                      </div>
+
+                      <div className="space-y-4">
+                        {quizQuestions.map((question, index) => (
+                          <Card key={index} className="border">
+                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                              <CardTitle className="text-base font-semibold">Question {index + 1}</CardTitle>
+                              {quizQuestions.length > 1 && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => removeQuizQuestion(index)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                              <div>
+                                <Label htmlFor={`question-${index}`}>Question Text *</Label>
+                                <Textarea
+                                  id={`question-${index}`}
+                                  placeholder="Enter question"
+                                  value={question.question}
+                                  onChange={(e) => handleQuestionTextChange(index, e.target.value)}
+                                  rows={3}
+                                />
+                              </div>
+
+                              <div className="space-y-3">
+                                <Label>Options *</Label>
+                                {question.options.map((option, optionIndex) => (
+                                  <div key={optionIndex}>
+                                    <Input
+                                      placeholder={`Option ${optionIndex + 1}`}
+                                      value={option}
+                                      onChange={(e) => handleOptionChange(index, optionIndex, e.target.value)}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                  <Label>Correct Option *</Label>
+                                  <Select
+                                    value={question.correctAnswer.toString()}
+                                    onValueChange={(value) => handleCorrectAnswerChange(index, value)}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Select correct option" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="0">Option 1</SelectItem>
+                                      <SelectItem value="1">Option 2</SelectItem>
+                                      <SelectItem value="2">Option 3</SelectItem>
+                                      <SelectItem value="3">Option 4</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div>
+                                  <Label>Explanation (optional)</Label>
+                                  <Textarea
+                                    placeholder="Explain the correct answer"
+                                    value={question.explanation}
+                                    onChange={(e) => handleExplanationChange(index, e.target.value)}
+                                    rows={2}
+                                  />
+                                </div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        {quizEditingId && (
+                          <Button variant="outline" onClick={resetQuizForm}>
+                            Cancel
+                          </Button>
+                        )}
+                        <Button onClick={handleSaveQuiz} disabled={quizSaving}>
+                          {quizSaving ? 'Saving...' : quizEditingId ? 'Update Quiz' : 'Create Quiz'}
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+            </div>
+          )}
+
+        {activeTab === 'competitions' && (
+          <div className="h-[calc(100vh-200px)]">
+            <ResizablePanelGroup direction="horizontal" className="h-full">
+              <ResizablePanel defaultSize={50} minSize={30} maxSize={70}>
+                <div className="h-full overflow-y-auto pr-4">
+                  <Card data-competition-form className="h-full">
+                    <CardHeader>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <CardTitle>{competitionEditingId ? 'Edit Competition' : 'Create Competition'}</CardTitle>
+                          <p className="text-sm text-slate-500">Define competition details and link quizzes for the event.</p>
+                        </div>
+                        {competitionEditingId && (
+                          <Button variant="outline" size="sm" onClick={resetCompetitionForm}>
+                            Cancel Edit
+                          </Button>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        <div>
+                          <Label htmlFor="competition-title">Title *</Label>
+                          <Input
+                            id="competition-title"
+                            placeholder="e.g., April Coding Challenge"
+                            value={competitionForm.title}
+                            onChange={(e) => setCompetitionForm(v => ({ ...v, title: e.target.value }))}
+                          />
+                        </div>
+
+                        <div>
+                          <Label htmlFor="competition-description">Description</Label>
+                          <Textarea
+                            id="competition-description"
+                            placeholder="Short description about the competition"
+                            value={competitionForm.description}
+                            onChange={(e) => setCompetitionForm(v => ({ ...v, description: e.target.value }))}
+                            rows={3}
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="space-y-4">
+                              <div>
+                                <p className="text-sm font-medium text-slate-900">Start Schedule *</p>
+                                <p className="text-xs text-slate-500">Pick the starting date and time for this competition section.</p>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label htmlFor="competition-start-date">Start Date</Label>
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <Button
+                                      id="competition-start-date"
+                                      variant="outline"
+                                      className="h-11 w-full justify-between rounded-2xl px-4 text-left font-normal"
+                                    >
+                                      <span className="flex items-center gap-2 truncate">
+                                        <CalendarDays className="h-4 w-4 shrink-0 text-slate-500" />
+                                        <span className="truncate">{formatCompetitionDateLabel(competitionForm.startDate)}</span>
+                                      </span>
+                                      <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+                                    </Button>
+                                  </PopoverTrigger>
+                                  <PopoverContent className="w-auto p-0" align="start">
+                                    <Calendar
+                                      mode="single"
+                                      selected={competitionForm.startDate ? new Date(`${competitionForm.startDate}T00:00:00`) : undefined}
+                                      onSelect={(date) => setCompetitionForm((prev) => ({ ...prev, startDate: date ? format(date, 'yyyy-MM-dd') : '' }))}
+                                      initialFocus
+                                    />
+                                  </PopoverContent>
+                                </Popover>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label>Start Time</Label>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div>
+                                    <Select
+                                      value={competitionForm.startHour}
+                                      onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, startHour: value }))}
+                                    >
+                                      <SelectTrigger id="competition-start-hour" className="h-11 rounded-2xl">
+                                        <SelectValue placeholder="Hour" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {COMPETITION_HOURS.map((hour) => (
+                                          <SelectItem key={hour} value={hour}>{hour}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div>
+                                    <Select
+                                      value={competitionForm.startMinute}
+                                      onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, startMinute: value }))}
+                                    >
+                                      <SelectTrigger id="competition-start-minute" className="h-11 rounded-2xl">
+                                        <SelectValue placeholder="Min" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {COMPETITION_MINUTES.map((minute) => (
+                                          <SelectItem key={minute} value={minute}>{minute}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div>
+                                    <Select
+                                      value={competitionForm.startPeriod}
+                                      onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, startPeriod: value }))}
+                                    >
+                                      <SelectTrigger id="competition-start-period" className="h-11 rounded-2xl">
+                                        <SelectValue placeholder="AM/PM" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {COMPETITION_PERIODS.map((period) => (
+                                          <SelectItem key={period} value={period}>{period}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="space-y-4">
+                              <div>
+                                <p className="text-sm font-medium text-slate-900">End Schedule *</p>
+                                <p className="text-xs text-slate-500">Pick the closing date and time for this competition section.</p>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label htmlFor="competition-end-date">End Date</Label>
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <Button
+                                      id="competition-end-date"
+                                      variant="outline"
+                                      className="h-11 w-full justify-between rounded-2xl px-4 text-left font-normal"
+                                    >
+                                      <span className="flex items-center gap-2 truncate">
+                                        <CalendarDays className="h-4 w-4 shrink-0 text-slate-500" />
+                                        <span className="truncate">{formatCompetitionDateLabel(competitionForm.endDate)}</span>
+                                      </span>
+                                      <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+                                    </Button>
+                                  </PopoverTrigger>
+                                  <PopoverContent className="w-auto p-0" align="start">
+                                    <Calendar
+                                      mode="single"
+                                      selected={competitionForm.endDate ? new Date(`${competitionForm.endDate}T00:00:00`) : undefined}
+                                      onSelect={(date) => setCompetitionForm((prev) => ({ ...prev, endDate: date ? format(date, 'yyyy-MM-dd') : '' }))}
+                                      initialFocus
+                                    />
+                                  </PopoverContent>
+                                </Popover>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label>End Time</Label>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div>
+                                    <Select
+                                      value={competitionForm.endHour}
+                                      onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, endHour: value }))}
+                                    >
+                                      <SelectTrigger id="competition-end-hour" className="h-11 rounded-2xl">
+                                        <SelectValue placeholder="Hour" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {COMPETITION_HOURS.map((hour) => (
+                                          <SelectItem key={hour} value={hour}>{hour}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div>
+                                    <Select
+                                      value={competitionForm.endMinute}
+                                      onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, endMinute: value }))}
+                                    >
+                                      <SelectTrigger id="competition-end-minute" className="h-11 rounded-2xl">
+                                        <SelectValue placeholder="Min" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {COMPETITION_MINUTES.map((minute) => (
+                                          <SelectItem key={minute} value={minute}>{minute}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div>
+                                    <Select
+                                      value={competitionForm.endPeriod}
+                                      onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, endPeriod: value }))}
+                                    >
+                                      <SelectTrigger id="competition-end-period" className="h-11 rounded-2xl">
+                                        <SelectValue placeholder="AM/PM" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {COMPETITION_PERIODS.map((period) => (
+                                          <SelectItem key={period} value={period}>{period}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="competition-duration">Duration (minutes)</Label>
+                            <Input
+                              id="competition-duration"
+                              type="number"
+                              min={1}
+                              value={competitionForm.durationMinutes}
+                              onChange={(e) => setCompetitionForm(v => ({ ...v, durationMinutes: e.target.value }))}
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="competition-tags">Tags</Label>
+                            <Input
+                              id="competition-tags"
+                              placeholder="e.g., monthly, campus, competitive"
+                              value={competitionForm.tags}
+                              onChange={(e) => setCompetitionForm(v => ({ ...v, tags: e.target.value }))}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                          <div className="flex items-center gap-3">
+                            <Checkbox
+                              checked={competitionForm.isPublished}
+                              onCheckedChange={(checked) => setCompetitionForm(v => ({ ...v, isPublished: checked }))}
+                              id="competition-published"
+                            />
+                            <Label htmlFor="competition-published" className="text-sm">
+                              Publish competition for students
+                            </Label>
+                          </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                          <div className="flex items-center justify-between mb-3 gap-3">
+                            <div>
+                              <p className="font-medium">Related Quizzes</p>
+                              <p className="text-sm text-slate-500">Each selected quiz becomes one exam section in the same order you pick it.</p>
+                            </div>
+                            <span className="text-sm text-slate-500">Select quizzes to include in this competition</span>
+                          </div>
+                          <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+                            {quizzesList.length > 0 ? (
+                              quizzesList.map((quiz) => (
+                                <label key={quiz._id} className="flex items-center gap-2 rounded-lg border p-3 hover:bg-slate-50">
+                                  <Checkbox
+                                    checked={competitionForm.relatedQuizzes.includes(quiz._id)}
+                                    onCheckedChange={(checked) => {
+                                      setCompetitionForm((prev) => {
+                                        const selected = new Set(prev.relatedQuizzes);
+                                        if (checked) selected.add(quiz._id);
+                                        else selected.delete(quiz._id);
+                                        return { ...prev, relatedQuizzes: Array.from(selected) };
+                                      });
+                                    }}
+                                    id={`quiz-rel-${quiz._id}`}
+                                  />
+                                  <div className="flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <p className="font-medium">{quiz.title}</p>
+                                        {competitionForm.relatedQuizzes.includes(quiz._id) && (
+                                          <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">Section {competitionForm.relatedQuizzes.indexOf(quiz._id) + 1}</Badge>
+                                        )}
+                                      </div>
+                                      <p className="text-xs text-slate-500">{quiz.category} • {quiz.difficulty} • {Math.round((quiz.timeLimit || 600) / 60)} min</p>
+                                  </div>
+                                </label>
+                              ))
+                            ) : (
+                              <p className="text-sm text-muted-foreground">Load quizzes by opening the quizzes tab, or create a quiz first.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2">
+                          {competitionEditingId && (
+                            <Button variant="outline" onClick={resetCompetitionForm}>
+                              Cancel
+                            </Button>
+                          )}
+                          <Button onClick={handleSaveCompetition} disabled={competitionSaving}>
+                            {competitionSaving ? 'Saving...' : competitionEditingId ? 'Update Competition' : 'Create Competition'}
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
                 </div>
               </ResizablePanel>
-              
+
               <ResizableHandle withHandle />
-              
+
               <ResizablePanel defaultSize={50} minSize={30} maxSize={70}>
                 <div className="h-full overflow-y-auto pl-4">
                   <Card className="h-full">
-              <CardHeader>
-                <CardTitle>Existing Quizzes</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {quizzesLoading && (
-                  <p className="text-sm text-muted-foreground">Loading quizzes...</p>
-                )}
-                {quizError && (
-                  <p className="text-sm text-red-600">{quizError}</p>
-                )}
-                {!quizzesLoading && !quizError && (
-                  <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                    {quizzesList.map((quiz) => (
-                      <div key={quiz._id} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1 space-y-2">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <p className="font-medium text-base">{quiz.title}</p>
-                              <Badge variant="outline">{quiz.category}</Badge>
-                              <Badge
-                                variant="outline"
-                                className={
-                                  quiz.difficulty === 'Easy'
-                                    ? 'bg-green-100 text-green-800'
-                                    : quiz.difficulty === 'Medium'
-                                      ? 'bg-yellow-100 text-yellow-800'
-                                      : 'bg-red-100 text-red-800'
-                                }
-                              >
-                                {quiz.difficulty}
-                              </Badge>
-                              <Badge variant={quiz.isPublished ? 'default' : 'outline'}>
-                                {quiz.isPublished ? 'Published' : 'Draft'}
-                              </Badge>
+                    <CardHeader>
+                      <CardTitle>Existing Competitions</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {competitionsLoading && <p className="text-sm text-muted-foreground">Loading competitions...</p>}
+                      {competitionsError && <p className="text-sm text-red-600">{competitionsError}</p>}
+                      {!competitionsLoading && !competitionsError && (
+                        <div className="space-y-4 max-h-[600px] overflow-y-auto">
+                          {competitions.map((competition) => (
+                            <div key={competition._id} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex-1 space-y-2">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <p className="font-medium text-base">{competition.title}</p>
+                                    <Badge variant="outline">{competition.isPublished ? 'Published' : 'Draft'}</Badge>
+                                    <Badge variant="outline">{competition.relatedQuizzes?.length || 0} quizzes</Badge>
+                                  </div>
+                                  {competition.description && (
+                                    <p className="text-sm text-muted-foreground">{competition.description}</p>
+                                  )}
+                                  <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
+                                    <span>Start: {new Date(competition.startDate).toLocaleString()}</span>
+                                    <span>End: {new Date(competition.endDate).toLocaleString()}</span>
+                                    <span>Duration: {competition.durationMinutes} min</span>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Button size="sm" variant="outline" onClick={() => handleEditCompetition(competition)}>
+                                    <Edit className="h-3 w-3 mr-1" />
+                                    Edit
+                                  </Button>
+                                  <Button size="sm" variant="destructive" onClick={() => handleDeleteCompetition(competition._id)}>
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </div>
                             </div>
-                            {quiz.description && (
-                              <p className="text-sm text-muted-foreground">{quiz.description}</p>
-                            )}
-                            <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
-                              <span>Time: {Math.round((quiz.timeLimit || 600) / 60)} min</span>
-                              <span>Questions: {quiz.questions?.length || 0}</span>
-                              {Array.isArray(quiz.tags) && quiz.tags.length > 0 && (
-                                <span>Tags: {quiz.tags.join(', ')}</span>
-                              )}
-                              <span>
-                                Updated: {quiz.updatedAt ? new Date(quiz.updatedAt).toLocaleDateString() : '-'}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button size="sm" variant="outline" onClick={() => handleEditQuiz(quiz)}>
-                              <Edit className="h-3 w-3 mr-1" />
-                              Edit
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => handleDeleteQuiz(quiz._id)}
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </Button>
-                          </div>
+                          ))}
+                          {competitions.length === 0 && (
+                            <p className="text-sm text-muted-foreground text-center py-8">No competitions yet. Create your first one!</p>
+                          )}
                         </div>
-                      </div>
-                    ))}
-                    {quizzesList.length === 0 && (
-                      <p className="text-sm text-muted-foreground text-center py-8">
-                        No quizzes yet. Create your first quiz!
-                      </p>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                      )}
+                    </CardContent>
+                  </Card>
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>

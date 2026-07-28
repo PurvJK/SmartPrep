@@ -152,6 +152,40 @@ class ApiService {
     });
   }
 
+  async listCompetitions({ includeUnpublished } = {}) {
+    const params = new URLSearchParams();
+    if (includeUnpublished) params.set('includeUnpublished', includeUnpublished);
+    return this.request(`/competitions${params.toString() ? `?${params.toString()}` : ''}`, {
+      includeAuth: includeUnpublished ? true : false
+    });
+  }
+
+  async getCompetitionById(id) {
+    return this.request(`/competitions/${id}`, {
+      includeAuth: true
+    });
+  }
+
+  async createCompetition(competitionData) {
+    return this.request('/competitions', {
+      method: 'POST',
+      body: JSON.stringify(competitionData),
+    });
+  }
+
+  async updateCompetition(id, competitionData) {
+    return this.request(`/competitions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(competitionData),
+    });
+  }
+
+  async deleteCompetition(id) {
+    return this.request(`/competitions/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getTheoryById(id) {
     return this.request(`/theory/${id}`, { includeAuth: false });
   }
@@ -249,6 +283,22 @@ class ApiService {
     return this.request(`/coding-problems/${problemId}/submissions`);
   }
 
+  // Quiz attempt methods
+  async saveQuizAttempt({ quizId, answers, timeTaken }) {
+    return this.request('/attempts', {
+      method: 'POST',
+      body: JSON.stringify({ quizId, answers, timeTaken })
+    });
+  }
+
+  async getAttemptById(id) {
+    return this.request(`/attempts/${id}`);
+  }
+
+  async getMyAttempts() {
+    return this.request('/attempts/my');
+  }
+
   // Admin methods
   async getAllUsers(page = 1, limit = 10) {
     return this.request(`/users?page=${page}&limit=${limit}`);
@@ -262,6 +312,13 @@ class ApiService {
     return this.request(`/users/${userId}/role`, {
       method: 'PUT',
       body: JSON.stringify({ role }),
+    });
+  }
+
+  async updateUserProfile(userId, profileData) {
+    return this.request(`/users/${userId}/profile`, {
+      method: 'PUT',
+      body: JSON.stringify(profileData),
     });
   }
 

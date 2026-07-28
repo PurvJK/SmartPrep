@@ -13,7 +13,8 @@ import {
   MessageSquare,
   User,
   Plus,
-  Database
+  Database,
+  Trophy
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -93,6 +94,7 @@ const Navbar = () => {
                     { to: '/admin/users', label: 'Users', icon: Users },
                     { to: '/admin/content', label: 'Add Content', icon: Plus },
                     { to: '/admin/quizzes', label: 'Quizzes', icon: Brain },
+                    { to: '/admin/competitions', label: 'Competitions', icon: Trophy },
                     { to: '/admin/interviews', label: 'Interview Questions', icon: MessageSquare },
                     { to: '/admin/coding', label: 'Set Code', icon: Code },
                   ].map(item => (
@@ -202,6 +204,12 @@ const Navbar = () => {
                   <Button variant={isActive('/admin/quizzes') ? 'default' : 'ghost'} className="w-full justify-start">
                     <Brain className="h-4 w-4 mr-2" />
                     Quizzes
+                  </Button>
+                </Link>
+                <Link to="/admin/competitions" className="block">
+                  <Button variant={isActive('/admin/competitions') ? 'default' : 'ghost'} className="w-full justify-start">
+                    <Trophy className="h-4 w-4 mr-2" />
+                    Competitions
                   </Button>
                 </Link>
                 <Link to="/admin/interviews" className="block">

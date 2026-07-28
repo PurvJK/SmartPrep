@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import apiService from '@/services/api';
 
@@ -41,6 +42,10 @@ const Profile = () => {
   const [editForm, setEditForm] = useState({});
   const { toast } = useToast();
 
+  const academicYearOptions = ['1', '2', '3', '4'];
+  const departmentOptions = ['CE', 'CSE', 'IT'];
+  const divisionOptions = ['A', 'B', 'C', 'D'];
+
   useEffect(() => {
     fetchUserProfile();
   }, []);
@@ -54,9 +59,11 @@ const Profile = () => {
         setEditForm({
           name: response.data.user.name,
           phone: response.data.user.profile?.phone || '',
-          college: response.data.user.profile?.college || '',
-          branch: response.data.user.profile?.branch || '',
           year: response.data.user.profile?.year || '',
+          studentId: response.data.user.profile?.studentId || '',
+          department: response.data.user.profile?.department || '',
+          class: response.data.user.profile?.class || '',
+          division: response.data.user.profile?.division || '',
           skills: response.data.user.profile?.skills || []
         });
       }
@@ -80,14 +87,26 @@ const Profile = () => {
     setEditForm({
       name: user.name,
       phone: user.profile?.phone || '',
-      college: user.profile?.college || '',
-      branch: user.profile?.branch || '',
       year: user.profile?.year || '',
+      studentId: user.profile?.studentId || '',
+      department: user.profile?.department || '',
+      class: user.profile?.class || '',
+      division: user.profile?.division || '',
       skills: user.profile?.skills || []
     });
   };
 
   const handleSave = async () => {
+    // Validate required fields
+    if (!editForm.name || editForm.name.trim() === '') {
+      toast({
+        title: "Validation Error",
+        description: "Full name is required",
+        variant: "destructive"
+      });
+      return;
+    }
+
     try {
       setIsSaving(true);
       const response = await apiService.updateProfile(editForm);
@@ -97,6 +116,14 @@ const Profile = () => {
         toast({
           title: "Success",
           description: "Profile updated successfully!"
+        });
+      } else {
+        // Handle case where response.success is false
+        const errorMsg = response.error || (response.errors && response.errors.join(', ')) || response.message || 'Failed to update profile';
+        toast({
+          title: "Error",
+          description: errorMsg,
+          variant: "destructive"
         });
       }
     } catch (error) {
@@ -278,7 +305,8 @@ const Profile = () => {
               </CardContent>
             </Card>
 
-            {/* Academic Information */}
+            {/* Academic Information - Only for Students */}
+            {user.role === 'student' && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center">
@@ -289,35 +317,18 @@ const Profile = () => {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="college">College/University</Label>
+                    <Label htmlFor="studentId">Student ID</Label>
                     {isEditing ? (
                       <Input
-                        id="college"
-                        value={editForm.college}
-                        onChange={(e) => handleInputChange('college', e.target.value)}
-                        placeholder="Enter your college/university"
+                        id="studentId"
+                        value={editForm.studentId}
+                        onChange={(e) => handleInputChange('studentId', e.target.value)}
+                        placeholder="Enter student ID"
                       />
                     ) : (
                       <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
                         <GraduationCap className="h-4 w-4 text-muted-foreground" />
-                        <span>{user.profile?.college || 'Not provided'}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="branch">Branch/Department</Label>
-                    {isEditing ? (
-                      <Input
-                        id="branch"
-                        value={editForm.branch}
-                        onChange={(e) => handleInputChange('branch', e.target.value)}
-                        placeholder="Enter your branch/department"
-                      />
-                    ) : (
-                      <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
-                        <Code className="h-4 w-4 text-muted-foreground" />
-                        <span>{user.profile?.branch || 'Not provided'}</span>
+                        <span>{user.profile?.studentId || 'Not provided'}</span>
                       </div>
                     )}
                   </div>
@@ -325,12 +336,16 @@ const Profile = () => {
                   <div className="space-y-2">
                     <Label htmlFor="year">Academic Year</Label>
                     {isEditing ? (
-                      <Input
-                        id="year"
-                        value={editForm.year}
-                        onChange={(e) => handleInputChange('year', e.target.value)}
-                        placeholder="e.g., 3rd Year, Final Year"
-                      />
+                      <Select value={editForm.year || ''} onValueChange={(value) => handleInputChange('year', value)}>
+                        <SelectTrigger id="year">
+                          <SelectValue placeholder="Select academic year" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {academicYearOptions.map((option) => (
+                            <SelectItem key={option} value={option}>{option}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     ) : (
                       <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
                         <Calendar className="h-4 w-4 text-muted-foreground" />
@@ -338,10 +353,81 @@ const Profile = () => {
                       </div>
                     )}
                   </div>
-                </div>
 
+                  <div className="space-y-2">
+                    <Label htmlFor="department">Department</Label>
+                    {isEditing ? (
+                      <Select value={editForm.department || ''} onValueChange={(value) => handleInputChange('department', value)}>
+                        <SelectTrigger id="department">
+                          <SelectValue placeholder="Select department" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {departmentOptions.map((option) => (
+                            <SelectItem key={option} value={option}>{option}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
+                        <Code className="h-4 w-4 text-muted-foreground" />
+                        <span>{user.profile?.department || 'Not provided'}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="class">Class</Label>
+                    {isEditing ? (
+                      <Input
+                        id="class"
+                        value={editForm.class}
+                        onChange={(e) => handleInputChange('class', e.target.value)}
+                        placeholder="Enter class"
+                      />
+                    ) : (
+                      <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
+                        <GraduationCap className="h-4 w-4 text-muted-foreground" />
+                        <span>{user.profile?.class || 'Not provided'}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="division">Division</Label>
+                    {isEditing ? (
+                      <Select value={editForm.division || ''} onValueChange={(value) => handleInputChange('division', value)}>
+                        <SelectTrigger id="division">
+                          <SelectValue placeholder="Select division" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {divisionOptions.map((option) => (
+                            <SelectItem key={option} value={option}>{option}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
+                        <Calendar className="h-4 w-4 text-muted-foreground" />
+                        <span>{user.profile?.division || 'Not provided'}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            )}
+
+            {/* Skills Information - For All Users */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Code className="h-5 w-5 mr-2" />
+                  Skills
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="skills">Skills</Label>
+                  <Label htmlFor="skills">Your Skills</Label>
                   {isEditing ? (
                     <Input
                       id="skills"

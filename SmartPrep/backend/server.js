@@ -17,7 +17,9 @@ import theoryRoutes from './routes/theory.js';
 import uploadRoutes from './routes/upload.js';
 import codingProblemRoutes from './routes/codingProblems.js';
 import quizRoutes from './routes/quizzes.js';
+import attemptRoutes from './routes/attempts.js';
 import interviewQuestionRoutes from './routes/interviewQuestions.js';
+import competitionRoutes from './routes/competitions.js';
 
 // Load environment variables
 dotenv.config();
@@ -89,6 +91,8 @@ app.use('/api/theory', theoryRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/coding-problems', codingProblemRoutes);
 app.use('/api/quizzes', quizRoutes);
+app.use('/api/competitions', competitionRoutes);
+app.use('/api/attempts', attemptRoutes);
 app.use('/api/interview-questions', interviewQuestionRoutes);
 
 // 404 handler

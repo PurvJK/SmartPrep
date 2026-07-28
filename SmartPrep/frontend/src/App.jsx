@@ -142,6 +142,11 @@ const App = () => (
                 <AdminPanel />
               </ProtectedRoute>
             } />
+            <Route path="/admin/competitions" element={
+              <ProtectedRoute requireAdmin={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
             <Route path="/admin/interviews" element={
               <ProtectedRoute requireAdmin={true}>
                 <AdminPanel />

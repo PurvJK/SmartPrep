@@ -58,6 +58,22 @@ const userSchema = new mongoose.Schema({
       type: String,
       default: ''
     },
+    studentId: {
+      type: String,
+      default: ''
+    },
+    department: {
+      type: String,
+      default: ''
+    },
+    class: {
+      type: String,
+      default: ''
+    },
+    division: {
+      type: String,
+      default: ''
+    },
     skills: [{
       type: String
     }],

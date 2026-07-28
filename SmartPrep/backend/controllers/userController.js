@@ -50,22 +50,26 @@ export const getProfile = async (req, res) => {
 // @access  Private
 export const updateProfile = async (req, res) => {
   try {
-    const { name, phone, college, branch, year, skills } = req.body;
+    const { name, phone, college, branch, year, skills, studentId, department, class: studentClass, division } = req.body;
     const userId = req.user.id;
 
     const updateData = {};
     
-    if (name) updateData.name = name;
-    if (phone) updateData['profile.phone'] = phone;
-    if (college) updateData['profile.college'] = college;
-    if (branch) updateData['profile.branch'] = branch;
-    if (year) updateData['profile.year'] = year;
-    if (skills) updateData['profile.skills'] = skills;
+    if (name !== undefined) updateData.name = name;
+    if (phone !== undefined) updateData['profile.phone'] = phone;
+    if (college !== undefined) updateData['profile.college'] = college;
+    if (branch !== undefined) updateData['profile.branch'] = branch;
+    if (year !== undefined) updateData['profile.year'] = year;
+    if (studentId !== undefined) updateData['profile.studentId'] = studentId;
+    if (department !== undefined) updateData['profile.department'] = department;
+    if (studentClass !== undefined) updateData['profile.class'] = studentClass;
+    if (division !== undefined) updateData['profile.division'] = division;
+    if (skills !== undefined) updateData['profile.skills'] = skills;
 
     const user = await User.findByIdAndUpdate(
       userId,
       { $set: updateData },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true, context: 'query' }
     );
 
     if (!user) {
@@ -92,6 +96,18 @@ export const updateProfile = async (req, res) => {
     });
   } catch (error) {
     console.error('Profile update error:', error);
+    
+    // Handle Mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: messages,
+        error: messages.join(', ')
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Server error during profile update',
@@ -377,6 +393,79 @@ export const deleteUser = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// @desc    Update user profile (Admin only)
+// @route   PUT /api/users/:id/profile
+// @access  Private/Admin
+export const updateUserProfile = async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { name, phone, college, branch, year, skills, studentId, department, class: studentClass, division } = req.body;
+
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const updateData = {};
+    
+    if (name !== undefined) updateData.name = name;
+    if (phone !== undefined) updateData['profile.phone'] = phone;
+    if (college !== undefined) updateData['profile.college'] = college;
+    if (branch !== undefined) updateData['profile.branch'] = branch;
+    if (year !== undefined) updateData['profile.year'] = year;
+    if (studentId !== undefined) updateData['profile.studentId'] = studentId;
+    if (department !== undefined) updateData['profile.department'] = department;
+    if (studentClass !== undefined) updateData['profile.class'] = studentClass;
+    if (division !== undefined) updateData['profile.division'] = division;
+    if (skills !== undefined) updateData['profile.skills'] = skills;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: updateData },
+      { new: true, runValidators: true, context: 'query' }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'User profile updated successfully',
+      data: {
+        user: {
+          id: updatedUser._id,
+          name: updatedUser.name,
+          email: updatedUser.email,
+          role: updatedUser.role,
+          avatar: updatedUser.avatar,
+          profile: updatedUser.profile,
+          progress: updatedUser.progress
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Update user profile error:', error);
+    
+    // Handle Mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: messages,
+        error: messages.join(', ')
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Server error during profile update',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
