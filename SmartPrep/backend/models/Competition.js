@@ -29,6 +29,27 @@ const CompetitionSchema = new mongoose.Schema({
       trim: true
     }
   ],
+  eligibilityMode: {
+    type: String,
+    enum: ['all', 'departmentYearClass', 'domain'],
+    default: 'all'
+  },
+  eligibleDepartment: {
+    type: String,
+    default: ''
+  },
+  eligibleYear: {
+    type: String,
+    default: ''
+  },
+  eligibleClass: {
+    type: String,
+    default: ''
+  },
+  eligibleDomains: [{
+    type: String,
+    trim: true
+  }],
   relatedQuizzes: [
     {
       type: mongoose.Schema.Types.ObjectId,

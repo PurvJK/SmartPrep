@@ -27,6 +27,7 @@ import QueueDataStructure from "./pages/StudyMaterials/DSA/QueueDataStructure";
 import TreeDataStructure from "./pages/StudyMaterials/DSA/TreeDataStructure";
 import GraphDataStructure from "./pages/StudyMaterials/DSA/GraphDataStructure";
 import TrieDataStructure from "./pages/StudyMaterials/DSA/TrieDataStructure";
+import CompetitionAnalytics from "./pages/CompetitionAnalytics";
 
 const queryClient = new QueryClient();
 
@@ -138,13 +139,23 @@ const App = () => (
               </ProtectedRoute>
             } />
             <Route path="/admin/quizzes" element={
-              <ProtectedRoute requireAdmin={true}>
+              <ProtectedRoute requireAdmin={true} allowFaculty={true}>
                 <AdminPanel />
               </ProtectedRoute>
             } />
             <Route path="/admin/competitions" element={
-              <ProtectedRoute requireAdmin={true}>
+              <ProtectedRoute requireAdmin={true} allowFaculty={true}>
                 <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/results" element={
+              <ProtectedRoute requireAdmin={true} allowFaculty={true}>
+                <AdminPanel />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/competition/:competitionId" element={
+              <ProtectedRoute requireAdmin={true} allowFaculty={true}>
+                <CompetitionAnalytics />
               </ProtectedRoute>
             } />
             <Route path="/admin/interviews" element={

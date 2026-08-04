@@ -1,9 +1,17 @@
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
-const ProtectedRoute = ({ children, requireAdmin = false, requireStudent = false }) => {
+const ProtectedRoute = ({
+  children,
+  requireAdmin = false,
+  allowFaculty = false,
+  requireStudent = false,
+}) => {
   const { user, loading, isAuthenticated } = useAuth();
   const location = useLocation();
+  const role = user?.role;
+  const isAdmin = role === 'admin';
+  const isFaculty = role === 'faculty';
 
   // Show loading spinner while checking authentication
   if (loading) {
@@ -19,23 +27,39 @@ const ProtectedRoute = ({ children, requireAdmin = false, requireStudent = false
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Check admin requirement
-  if (requireAdmin && user?.role !== 'admin') {
-    return <Navigate to="/dashboard" replace />;
+  // Admin-only or admin + faculty panel routes
+  if (requireAdmin) {
+    if (allowFaculty) {
+      if (!isAdmin && !isFaculty) {
+        return <Navigate to="/dashboard" replace />;
+      }
+    } else if (!isAdmin) {
+      if (isFaculty) {
+        return <Navigate to="/admin/quizzes" replace />;
+      }
+      return <Navigate to="/dashboard" replace />;
+    }
   }
 
-  // Check student requirement - redirect admins to admin panel
-  if (requireStudent && user?.role !== 'student') {
+  // Student-only routes
+  if (requireStudent && role !== 'student') {
+    if (isAdmin) {
+      return <Navigate to="/admin" replace />;
+    }
+    if (isFaculty) {
+      return <Navigate to="/admin/quizzes" replace />;
+    }
     return <Navigate to="/admin" replace />;
   }
 
-  // Prevent admins from accessing student pages
-  if (user?.role === 'admin' && !requireAdmin) {
-    // Allow access to profile page for admins
+  // Keep staff off student app pages (profile is allowed)
+  if ((isAdmin || isFaculty) && !requireAdmin) {
     if (location.pathname === '/profile') {
       return children;
     }
-    // Redirect all other non-admin pages to admin panel
+    if (isFaculty) {
+      return <Navigate to="/admin/quizzes" replace />;
+    }
     return <Navigate to="/admin" replace />;
   }
 

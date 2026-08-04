@@ -23,6 +23,11 @@ const QuizQuestionSchema = new mongoose.Schema({
   explanation: {
     type: String,
     default: ''
+  },
+  topic: {
+    type: String,
+    trim: true,
+    default: ''
   }
 }, { _id: false });
 

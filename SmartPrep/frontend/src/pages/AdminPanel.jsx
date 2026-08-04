@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import Navbar from '@/components/Layout/Navbar';
@@ -13,18 +13,37 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Users, BookOpen, Brain, Plus, Upload, X, Save, Edit, Trash2, Bold, Italic, Underline, List, Type, Code, Minus, Plus as PlusIcon, MessageSquare, Terminal, Check, Trophy, CalendarDays, ChevronDown } from 'lucide-react';
+import { Users, BookOpen, Brain, Plus, Upload, X, Save, Edit, Trash2, Bold, Italic, Underline, List, Type, Code, Minus, Plus as PlusIcon, MessageSquare, Terminal, Check, Trophy, CalendarDays, ChevronDown, Download, Search, Building2, GraduationCap, LayoutGrid, ArrowRight, ArrowLeft, FileSpreadsheet, Eye, ShieldCheck, ChevronRight } from 'lucide-react';
 import { read, write, utils } from 'xlsx';
 import { Switch } from '@/components/ui/switch';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import api from '@/services/api';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
+import { downloadCandidateMarksPdf } from '@/utils/downloadResultsPdf';
+import {
+  BarChart,
+  Bar,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
 
 const createEmptyQuizQuestion = () => ({
   question: '',
   options: ['', '', '', ''],
   correctAnswer: 0,
-  explanation: ''
+  explanation: '',
+  topic: '',
+  marks: '',
+  negativeMarks: '',
+  difficulty: 'Medium',
+  subject: '',
+  questionType: 'MCQ'
 });
 
 const initialQuizForm = {
@@ -108,6 +127,10 @@ const getDefaultCompetitionForm = () => {
   return {
     title: '',
     description: '',
+    eligibilityMode: 'all',
+    eligibleDepartment: '',
+    eligibleClass: '',
+    eligibleDomains: '',
     startDate: date,
     startHour: String(hour12).padStart(2, '0'),
     startMinute: String(now.getMinutes()).padStart(2, '0'),
@@ -123,12 +146,27 @@ const getDefaultCompetitionForm = () => {
   };
 };
 
+const formatDurationMinutes = (value) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  const minutes = Number(value) <= 0 ? 0 : Math.max(1, Math.round(Number(value) / 60));
+  return `${minutes}m`;
+};
+
+const getPerformanceStatus = (value) => {
+  if (value >= 80) return { label: '🟢 Pass', tone: 'bg-emerald-100 text-emerald-700' };
+  if (value >= 60) return { label: '🟡 Borderline', tone: 'bg-amber-100 text-amber-700' };
+  return { label: '🔴 Needs work', tone: 'bg-rose-100 text-rose-700' };
+};
+
 const AdminPanel = () => {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('users');
   const location = useLocation();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user: authUser } = useAuth();
+  const panelRole = authUser?.role || user?.role;
+  const isFacultyPanel = panelRole === 'faculty';
   const [materialForm, setMaterialForm] = useState({
     title: '',
     category: '',
@@ -173,6 +211,19 @@ const AdminPanel = () => {
   const [competitionForm, setCompetitionForm] = useState(() => getDefaultCompetitionForm());
   const [competitionEditingId, setCompetitionEditingId] = useState(null);
   const [competitionSaving, setCompetitionSaving] = useState(false);
+  const [candidateResults, setCandidateResults] = useState([]);
+  const [candidateResultsLoading, setCandidateResultsLoading] = useState(false);
+  const [candidateResultsError, setCandidateResultsError] = useState('');
+  const [selectedCompetitionId, setSelectedCompetitionId] = useState('');
+  const [competitionSearch, setCompetitionSearch] = useState('');
+  const [competitionStats, setCompetitionStats] = useState({});
+  const [selectedQuizIdForStats, setSelectedQuizIdForStats] = useState('');
+  const [quizAttemptStats, setQuizAttemptStats] = useState(null);
+  const [quizAttemptStatsLoading, setQuizAttemptStatsLoading] = useState(false);
+  const [quizAttemptStatsError, setQuizAttemptStatsError] = useState('');
+  const [quizResults, setQuizResults] = useState([]);
+  const [quizResultsLoading, setQuizResultsLoading] = useState(false);
+  const [quizResultsError, setQuizResultsError] = useState('');
 
   // Interview Questions state
   const [interviewQuestions, setInterviewQuestions] = useState([]);
@@ -224,6 +275,31 @@ const AdminPanel = () => {
       const res = await api.listCompetitions({ includeUnpublished: true });
       const list = Array.isArray(res) ? res : (res.data || []);
       setCompetitions(list);
+
+      // Fetch stats for all competitions in parallel
+      const statsPromises = list.map((competition) =>
+        api.getCompetitionResults(competition._id)
+          .then((resData) => {
+            const results = Array.isArray(resData?.data) ? resData.data : [];
+            const appeared = results.length;
+            const avgScore = results.length > 0
+              ? Math.round(results.reduce((sum, r) => sum + (r.percentage ?? 0), 0) / results.length)
+              : 0;
+            return { competitionId: competition._id, appeared, avgScore };
+          })
+          .catch(() => ({
+            competitionId: competition._id,
+            appeared: '—',
+            avgScore: '—'
+          }))
+      );
+
+      const allStats = await Promise.all(statsPromises);
+      const statsMap = {};
+      allStats.forEach((stat) => {
+        statsMap[stat.competitionId] = stat;
+      });
+      setCompetitionStats(statsMap);
     } catch (error) {
       setCompetitionsError(error.message || 'Failed to load competitions');
     } finally {
@@ -244,6 +320,95 @@ const AdminPanel = () => {
       setQuizzesLoading(false);
     }
   }, []);
+
+  const loadCandidateResults = useCallback(async (competitionId) => {
+    if (!competitionId) {
+      setCandidateResults([]);
+      setCandidateResultsError('');
+      return;
+    }
+
+    try {
+      setCandidateResultsLoading(true);
+      setCandidateResultsError('');
+      const res = await api.getCompetitionResults(competitionId);
+      const list = Array.isArray(res?.data) ? res.data : [];
+      setCandidateResults(list);
+    } catch (error) {
+      setCandidateResultsError(error.message || 'Failed to load competition results');
+    } finally {
+      setCandidateResultsLoading(false);
+    }
+  }, []);
+
+  const loadQuizAttemptStats = useCallback(async (quizId) => {
+    if (!quizId) {
+      setQuizAttemptStats(null);
+      setQuizAttemptStatsError('');
+      setQuizResults([]);
+      setQuizResultsError('');
+      return;
+    }
+
+    try {
+      setQuizAttemptStatsLoading(true);
+      setQuizResultsLoading(true);
+      setQuizAttemptStatsError('');
+      setQuizResultsError('');
+
+      const [statsResult, resultsResult] = await Promise.allSettled([
+        api.getAttemptStats(quizId),
+        api.getCandidateResults(quizId)
+      ]);
+
+      const statsData = statsResult.status === 'fulfilled' ? (statsResult.value?.data || null) : null;
+      const resultsData = resultsResult.status === 'fulfilled' && Array.isArray(resultsResult.value?.data)
+        ? resultsResult.value.data
+        : [];
+
+      setQuizAttemptStats(statsData);
+      setQuizResults(resultsData);
+
+      if (statsResult.status === 'rejected' && resultsResult.status === 'rejected') {
+        throw new Error(statsResult.reason?.message || resultsResult.reason?.message || 'Failed to load quiz dashboard');
+      }
+    } catch (error) {
+      setQuizAttemptStatsError(error.message || 'Failed to load quiz attempt stats');
+      setQuizAttemptStats(null);
+      setQuizResults([]);
+      setQuizResultsError(error.message || 'Failed to load quiz results');
+    } finally {
+      setQuizAttemptStatsLoading(false);
+      setQuizResultsLoading(false);
+    }
+  }, []);
+
+  const scoreDistributionData = useMemo(() => {
+    if (!quizAttemptStats?.scoreDistribution?.length) {
+      return [];
+    }
+
+    return quizAttemptStats.scoreDistribution.map((bucket) => ({
+      label: bucket.label,
+      count: bucket.count
+    }));
+  }, [quizAttemptStats]);
+
+  const rankedQuizResults = useMemo(() => {
+    const sorted = [...quizResults].sort((a, b) => {
+      const difference = (b.percentage ?? 0) - (a.percentage ?? 0);
+      if (difference !== 0) return difference;
+      return (a.timeTaken ?? 0) - (b.timeTaken ?? 0);
+    });
+
+    return sorted.map((result, index) => ({ ...result, rank: index + 1 }));
+  }, [quizResults]);
+
+  const competitionTitle = selectedCompetitionId
+    ? competitions.find((competition) => competition._id === selectedCompetitionId)?.title || 'Selected competition'
+    : 'Selected competition';
+
+  const selectedQuizTitle = quizzesList.find((quiz) => quiz._id === selectedQuizIdForStats)?.title || 'Selected quiz';
 
   const downloadBulkTemplate = () => {
     const headers = [
@@ -284,6 +449,38 @@ const AdminPanel = () => {
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = 'smartprep-bulk-import-template.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const downloadStudentImportTemplate = () => {
+    const headers = ['name', 'email', 'studentId', 'password'];
+    const sample = ['John Doe', 'john.doe@college.edu', 'CE2025001', 'Password123'];
+    const workbook = utils.book_new();
+    const worksheet = utils.aoa_to_sheet([headers, sample]);
+    utils.book_append_sheet(workbook, worksheet, 'Template');
+    const wbout = write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'smartprep-student-import-template.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const downloadFacultyImportTemplate = () => {
+    const headers = ['name', 'email', 'password'];
+    const sample = ['Dr. Anita Sharma', 'anita.sharma@college.edu', 'FacultyPass123'];
+    const workbook = utils.book_new();
+    const worksheet = utils.aoa_to_sheet([headers, sample]);
+    utils.book_append_sheet(workbook, worksheet, 'Template');
+    const wbout = write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'smartprep-faculty-import-template.xlsx';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -493,7 +690,8 @@ const AdminPanel = () => {
           question: question.question,
           options: question.options,
           correctAnswer: question.correctAnswer,
-          explanation: question.explanation || ''
+          explanation: question.explanation || '',
+          topic: question.topic || ''
         }))
       };
 
@@ -529,7 +727,8 @@ const AdminPanel = () => {
   // Sync active tab with URL path
   useEffect(() => {
     const path = location.pathname;
-    if (path.includes('/admin/content')) setActiveTab('content');
+    if (path.includes('/admin/results')) setActiveTab('results');
+    else if (path.includes('/admin/content')) setActiveTab('content');
     else if (path.includes('/admin/quizzes')) setActiveTab('quizzes');
     else if (path.includes('/admin/competitions')) setActiveTab('competitions');
     else if (path.includes('/admin/interviews')) setActiveTab('interviews');
@@ -537,6 +736,17 @@ const AdminPanel = () => {
     else if (path.includes('/admin/users')) setActiveTab('users');
     else if (path.includes('/admin')) setActiveTab('users');
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!isFacultyPanel) return;
+    const path = location.pathname;
+    const onAllowedRoute =
+      path.includes('/admin/quizzes') || path.includes('/admin/competitions') || path.includes('/admin/results');
+    if (!onAllowedRoute) {
+      navigate('/admin/quizzes', { replace: true });
+      setActiveTab('quizzes');
+    }
+  }, [location.pathname, isFacultyPanel, navigate]);
 
   // Fetch Theory when content tab is active
   useEffect(() => {
@@ -588,14 +798,77 @@ const AdminPanel = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState(null);
   const [savingUser, setSavingUser] = useState(false);
+  const [facultyForm, setFacultyForm] = useState({ name: '', email: '', password: '' });
+  const [creatingFaculty, setCreatingFaculty] = useState(false);
+  const [userSearch, setUserSearch] = useState('');
+  const [userDepartmentFilter, setUserDepartmentFilter] = useState('all');
+  const [userYearFilter, setUserYearFilter] = useState('all');
+  const [studentForm, setStudentForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    studentId: '',
+    department: '',
+    year: '',
+    class: '',
+    division: '',
+    domain: ''
+  });
+  const [creatingStudent, setCreatingStudent] = useState(false);
+  const [selectedDepartment, setSelectedDepartment] = useState('');
+  const [selectedYear, setSelectedYear] = useState('');
+  const [selectedClass, setSelectedClass] = useState('');
+
+  const classOptionsByDepartment = {
+    CE: ['CE1', 'CE2', 'CE3', 'CE4'],
+    CSE: ['CSE1', 'CSE2', 'CSE3', 'CSE4'],
+    IT: ['IT1', 'IT2', 'IT3', 'IT4'],
+  };
+  const availableClassOptions = studentForm.department
+    ? classOptionsByDepartment[studentForm.department] || []
+    : ['CE1', 'CE2', 'CE3', 'CE4', 'CSE1', 'CSE2', 'CSE3', 'CSE4', 'IT1', 'IT2', 'IT3', 'IT4'];
+  const editAvailableClassOptions = editingUserForm?.department
+    ? classOptionsByDepartment[editingUserForm.department] || []
+    : ['CE1', 'CE2', 'CE3', 'CE4', 'CSE1', 'CSE2', 'CSE3', 'CSE4', 'IT1', 'IT2', 'IT3', 'IT4'];
+  const [showStudentCreator, setShowStudentCreator] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState(null);
+  const [studentDrawerOpen, setStudentDrawerOpen] = useState(false);
+  const [selectedStudentIds, setSelectedStudentIds] = useState([]);
+  const [studentStatusFilter, setStudentStatusFilter] = useState('all');
+  const [studentDomainFilter, setStudentDomainFilter] = useState('all');
+  const [studentImportFile, setStudentImportFile] = useState(null);
+  const [studentImportPreview, setStudentImportPreview] = useState([]);
+  const [studentImportLoading, setStudentImportLoading] = useState(false);
+  const [studentImportError, setStudentImportError] = useState('');
+  const [studentImportSuccess, setStudentImportSuccess] = useState('');
+  const [studentPage, setStudentPage] = useState(1);
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkEditSaving, setBulkEditSaving] = useState(false);
+  const [bulkEditForm, setBulkEditForm] = useState({ year: '', class: '', division: '', domain: '' });
+  const STUDENT_PAGE_SIZE = 8;
+
+  const normalizeValue = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
+  const normalizeValueForMatch = (value) => normalizeValue(value).toLowerCase();
+  const studentUsers = (usersList.filter((user) => user.role === 'student') || []);
+  const competitionEligibleClassOptions = Array.from(
+    new Set(
+      studentUsers
+        .filter((student) => {
+          if (!competitionForm.eligibleDepartment) return Boolean(student.profile?.class);
+          return normalizeValueForMatch(student.profile?.department) === normalizeValueForMatch(competitionForm.eligibleDepartment);
+        })
+        .map((student) => student.profile?.class)
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
 
   useEffect(() => {
     const fetchUsers = async () => {
-      if (activeTab !== 'users') return;
+      if (activeTab !== 'users' && activeTab !== 'competitions') return;
       try {
         setUsersLoading(true);
         setUsersError('');
-        const res = await api.getAllUsers(1, 50);
+        const res = await api.getAllUsers(1, 200);
         // backend returns { success, data: { users, pagination } }
         const list = res.data?.users || [];
         setUsersList(list);
@@ -609,6 +882,12 @@ const AdminPanel = () => {
   }, [activeTab]);
 
   useEffect(() => {
+    if (competitionForm.eligibilityMode === 'departmentYearClass' && competitionForm.eligibleClass && !competitionEligibleClassOptions.includes(competitionForm.eligibleClass)) {
+      setCompetitionForm((prev) => ({ ...prev, eligibleClass: '' }));
+    }
+  }, [competitionForm.eligibilityMode, competitionForm.eligibleClass, competitionForm.eligibleDepartment, competitionEligibleClassOptions]);
+
+  useEffect(() => {
     if (activeTab === 'quizzes') {
       loadQuizzes();
     }
@@ -617,7 +896,15 @@ const AdminPanel = () => {
       loadCompetitions();
       loadQuizzes();
     }
-  }, [activeTab, loadCompetitions, loadQuizzes]);
+
+    if (activeTab === 'results') {
+      loadCompetitions();
+      loadQuizzes();
+      if (selectedCompetitionId) {
+        loadCandidateResults(selectedCompetitionId);
+      }
+    }
+  }, [activeTab, loadCompetitions, loadCandidateResults, selectedCompetitionId, loadQuizzes]);
 
   // Load interview questions
   const loadInterviewQuestions = useCallback(async () => {
@@ -963,7 +1250,13 @@ const AdminPanel = () => {
             question: question.question || '',
             options,
             correctAnswer,
-            explanation: question.explanation || ''
+            explanation: question.explanation || '',
+            topic: question.topic || '',
+            marks: question.marks || '',
+            negativeMarks: question.negativeMarks || '',
+            difficulty: question.difficulty || 'Medium',
+            subject: question.subject || '',
+            questionType: question.questionType || 'MCQ'
           };
         })
       );
@@ -1082,6 +1375,10 @@ const AdminPanel = () => {
     setCompetitionForm({
       title: competition.title || '',
       description: competition.description || '',
+      eligibilityMode: competition.eligibilityMode || 'all',
+      eligibleDepartment: competition.eligibleDepartment || '',
+      eligibleClass: competition.eligibleClass || '',
+      eligibleDomains: Array.isArray(competition.eligibleDomains) ? competition.eligibleDomains.join(', ') : '',
       startDate: startParts.date,
       startHour: startParts.hour || '',
       startMinute: startParts.minute || '',
@@ -1154,6 +1451,13 @@ const AdminPanel = () => {
           .split(',')
           .map((tag) => tag.trim())
           .filter(Boolean),
+        eligibilityMode: competitionForm.eligibilityMode,
+        eligibleDepartment: competitionForm.eligibleDepartment.trim(),
+        eligibleClass: competitionForm.eligibleClass.trim(),
+        eligibleDomains: competitionForm.eligibleDomains
+          .split(',')
+          .map((domain) => domain.trim())
+          .filter(Boolean),
         relatedQuizzes: competitionForm.relatedQuizzes,
         isPublished: competitionForm.isPublished
       };
@@ -1197,94 +1501,940 @@ const AdminPanel = () => {
     }
   };
 
+  const refreshUsers = async () => {
+    const res = await api.getAllUsers(1, 200);
+    setUsersList(res.data?.users || []);
+  };
+
+  const facultyUsers = (usersList.filter((user) => user.role === 'faculty') || []);
+
+  const normalizedSearch = userSearch.trim().toLowerCase();
+  const filteredFacultyUsers = facultyUsers.filter((user) => {
+    if (!normalizedSearch) return true;
+    return [user.name, user.email].some((value) => (value || '').toLowerCase().includes(normalizedSearch));
+  });
+
+  const getStudentProfileValue = (student, key) => normalizeValue(student?.profile?.[key] ?? student?.[key] ?? '');
+
+  const departmentGroups = studentUsers.reduce((acc, student) => {
+    const department = getStudentProfileValue(student, 'department') || 'Unassigned';
+    const className = getStudentProfileValue(student, 'class') || 'Unassigned';
+    const year = getStudentProfileValue(student, 'year') || 'Unassigned';
+    if (!acc[department]) {
+      acc[department] = { students: [], years: {}, classes: new Set() };
+    }
+    acc[department].students.push(student);
+    acc[department].classes.add(className);
+    if (!acc[department].years[year]) {
+      acc[department].years[year] = [];
+    }
+    acc[department].years[year].push(student);
+    return acc;
+  }, {});
+
+  const departmentOptions = Object.keys(departmentGroups).sort((a, b) => a.localeCompare(b));
+  const filteredDepartmentStudents = selectedDepartment
+    ? studentUsers.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'department')) === normalizeValueForMatch(selectedDepartment))
+    : studentUsers;
+  const yearOptions = Array.from(new Set(filteredDepartmentStudents.map((student) => getStudentProfileValue(student, 'year') || 'Unassigned'))).sort((a, b) => a.localeCompare(b));
+  const filteredYearStudents = selectedYear
+    ? filteredDepartmentStudents.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'year')) === normalizeValueForMatch(selectedYear))
+    : filteredDepartmentStudents;
+  const classOptions = Array.from(new Set(filteredYearStudents.map((student) => getStudentProfileValue(student, 'class') || 'Unassigned'))).sort((a, b) => a.localeCompare(b));
+  const filteredClassStudents = selectedClass
+    ? filteredYearStudents.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'class')) === normalizeValueForMatch(selectedClass))
+    : filteredYearStudents;
+
+  const visibleStudents = filteredClassStudents.filter((student) => {
+    const matchesSearch = !normalizedSearch || [student.name, student.email, getStudentProfileValue(student, 'studentId')].some((value) => normalizeValueForMatch(value).includes(normalizedSearch));
+    const matchesStatus = studentStatusFilter === 'all' || (studentStatusFilter === 'active' ? student.isActive !== false : student.isActive === false);
+    const domainValues = [student.profile?.domain, student.profile?.skills].flat().filter(Boolean);
+    const matchesDomain = studentDomainFilter === 'all' || domainValues.some((value) => normalizeValueForMatch(value).includes(normalizeValueForMatch(studentDomainFilter)));
+    const matchesDepartment = !selectedDepartment || normalizeValueForMatch(getStudentProfileValue(student, 'department')) === normalizeValueForMatch(selectedDepartment);
+    const matchesYear = !selectedYear || normalizeValueForMatch(getStudentProfileValue(student, 'year')) === normalizeValueForMatch(selectedYear);
+    const matchesClass = !selectedClass || normalizeValueForMatch(getStudentProfileValue(student, 'class')) === normalizeValueForMatch(selectedClass);
+    return matchesSearch && matchesStatus && matchesDomain && matchesDepartment && matchesYear && matchesClass;
+  });
+
+  const pagedStudents = visibleStudents.slice((studentPage - 1) * STUDENT_PAGE_SIZE, studentPage * STUDENT_PAGE_SIZE);
+  const studentPageCount = Math.max(1, Math.ceil(visibleStudents.length / STUDENT_PAGE_SIZE));
+  const selectedStudents = visibleStudents.filter((student) => selectedStudentIds.includes(student._id));
+  const currentPageStudentIds = pagedStudents.map((student) => student._id);
+
+  useEffect(() => {
+    if (studentPage > studentPageCount) {
+      setStudentPage(studentPageCount);
+    }
+  }, [studentPage, studentPageCount]);
+  const isAllCurrentPageSelected = pagedStudents.length > 0 && currentPageStudentIds.every((id) => selectedStudentIds.includes(id));
+  const isSomeCurrentPageSelected = pagedStudents.some((student) => selectedStudentIds.includes(student._id));
+  const summaryStats = [
+    { label: 'Students', value: studentUsers.length, tone: 'secondary' },
+    { label: 'Departments', value: departmentOptions.length, tone: 'primary' },
+    { label: 'Classes', value: Array.from(new Set(studentUsers.map((student) => student.profile?.class || 'Unassigned'))).length, tone: 'outline' },
+    { label: 'Active Students', value: studentUsers.filter((student) => student.isActive !== false).length, tone: 'outline' },
+    { label: 'Inactive Students', value: studentUsers.filter((student) => student.isActive === false).length, tone: 'outline' }
+  ];
+
+  const resetStudentHierarchy = () => {
+    setSelectedDepartment('');
+    setSelectedYear('');
+    setSelectedClass('');
+    setStudentPage(1);
+    setSelectedStudentIds([]);
+  };
+
+  const openStudentCreator = () => {
+    setStudentForm((prev) => ({
+      ...prev,
+      department: selectedDepartment || prev.department,
+      year: selectedYear || prev.year,
+      class: selectedClass || prev.class,
+    }));
+    setShowStudentCreator(true);
+  };
+
+  const openStudentDetails = (student) => {
+    setSelectedStudent(student);
+    setStudentDrawerOpen(true);
+  };
+
+  const toggleStudentSelection = (studentId) => {
+    setSelectedStudentIds((prev) => (prev.includes(studentId) ? prev.filter((id) => id !== studentId) : [...prev, studentId]));
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedStudents.length) return;
+    if (!confirm(`Delete ${selectedStudents.length} selected student${selectedStudents.length > 1 ? 's' : ''}?`)) return;
+    try {
+      await Promise.all(selectedStudents.map((student) => api.deleteUser(student._id)));
+      toast({ title: 'Deleted', description: `Removed ${selectedStudents.length} students successfully.` });
+      await refreshUsers();
+      setSelectedStudentIds([]);
+    } catch (error) {
+      toast({ title: 'Error', description: error.message || 'Failed to delete selected students', variant: 'destructive' });
+    }
+  };
+
+  const handleBulkDeactivate = async () => {
+    if (!selectedStudents.length) return;
+    if (!confirm(`Deactivate ${selectedStudents.length} selected student${selectedStudents.length > 1 ? 's' : ''}?`)) return;
+    try {
+      await Promise.all(selectedStudents.map((student) => api.deactivateUser(student._id)));
+      toast({ title: 'Updated', description: `Deactivated ${selectedStudents.length} students successfully.` });
+      await refreshUsers();
+      setSelectedStudentIds([]);
+    } catch (error) {
+      toast({ title: 'Error', description: error.message || 'Failed to deactivate selected students', variant: 'destructive' });
+    }
+  };
+
+  const handleBulkEdit = async () => {
+    if (!selectedStudents.length) return;
+
+    const updates = {};
+    if (bulkEditForm.year.trim()) updates.year = bulkEditForm.year.trim();
+    if (bulkEditForm.class.trim()) updates.class = bulkEditForm.class.trim();
+    if (bulkEditForm.division) updates.division = bulkEditForm.division;
+    if (bulkEditForm.domain.trim()) updates.domain = bulkEditForm.domain.split(',').map((item) => item.trim()).filter(Boolean);
+
+    if (Object.keys(updates).length === 0) {
+      toast({ title: 'Nothing to update', description: 'Enter at least one field to bulk edit.', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      setBulkEditSaving(true);
+      await Promise.all(selectedStudents.map((student) => api.updateUserProfile(student._id, updates)));
+      toast({ title: 'Updated', description: `Updated ${selectedStudents.length} students successfully.` });
+      await refreshUsers();
+      setSelectedStudentIds([]);
+      setBulkEditOpen(false);
+      setBulkEditForm({ year: '', class: '', division: '', domain: '' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message || 'Failed to update selected students', variant: 'destructive' });
+    } finally {
+      setBulkEditSaving(false);
+    }
+  };
+
+  const handleExportSelected = () => {
+    if (!selectedStudents.length) return;
+    const workbook = utils.book_new();
+    const worksheet = utils.aoa_to_sheet([
+      ['Name', 'Email', 'Student ID', 'Department', 'Year', 'Class', 'Domain', 'Status'],
+      ...selectedStudents.map((student) => [
+        student.name || '',
+        student.email || '',
+        student.profile?.studentId || '',
+        student.profile?.department || '',
+        student.profile?.year || '',
+        student.profile?.class || '',
+        (student.profile?.domain || []).join(', '),
+        student.isActive === false ? 'Inactive' : 'Active'
+      ])
+    ]);
+    utils.book_append_sheet(workbook, worksheet, 'Selected Students');
+    const wbout = write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'selected-students.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast({ title: 'Exported', description: `Prepared ${selectedStudents.length} selected students for download.` });
+  };
+
+  const handleStudentImportFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setStudentImportFile(file);
+      setStudentImportError('');
+      setStudentImportSuccess('');
+      const data = await file.arrayBuffer();
+      const workbook = read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = utils.sheet_to_json(sheet, { defval: '' });
+      const requiredHeaders = ['name', 'email', 'studentid', 'password'];
+      const normalizedHeaders = rows[0] ? Object.keys(rows[0]).map((header) => String(header).trim().toLowerCase()) : [];
+      const missing = requiredHeaders.filter((header) => !normalizedHeaders.includes(header));
+      if (missing.length) {
+        throw new Error(`Missing required columns: ${missing.join(', ')}`);
+      }
+      setStudentImportPreview(rows.slice(0, 5).map((row) => ({
+        name: row.name || '',
+        email: row.email || '',
+        studentId: row.studentid || row.studentId || '',
+        password: row.password || ''
+      })));
+    } catch (error) {
+      setStudentImportError(error.message || 'Unable to read the Excel file.');
+      setStudentImportPreview([]);
+    }
+  };
+
+  const handleStudentImport = async () => {
+    if (!studentImportFile) {
+      setStudentImportError('Please select an Excel file first.');
+      return;
+    }
+    try {
+      setStudentImportLoading(true);
+      setStudentImportError('');
+      setStudentImportSuccess('');
+      const data = await studentImportFile.arrayBuffer();
+      const workbook = read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = utils.sheet_to_json(sheet, { defval: '' });
+      const studentPayloads = rows
+        .filter((row) => row.name || row.email || row.studentid || row.studentId)
+        .map((row) => ({
+          name: String(row.name || '').trim(),
+          email: String(row.email || '').trim(),
+          password: String(row.password || '').trim(),
+          studentId: String(row.studentid || row.studentId || '').trim(),
+          department: selectedDepartment || studentForm.department || '',
+          year: selectedYear || studentForm.year || '',
+          class: selectedClass || studentForm.class || '',
+          division: studentForm.division || '',
+        }));
+      if (!studentPayloads.length) {
+        throw new Error('The file does not contain any student rows.');
+      }
+      for (const payload of studentPayloads) {
+        await api.createStudent(payload);
+      }
+      await refreshUsers();
+      setStudentImportSuccess(`Imported ${studentPayloads.length} student${studentPayloads.length > 1 ? 's' : ''} into ${selectedClass || 'the current class'}.`);
+      setStudentImportFile(null);
+      setStudentImportPreview([]);
+    } catch (error) {
+      setStudentImportError(error.message || 'Failed to import students.');
+    } finally {
+      setStudentImportLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar user={user} onLogout={() => setUser(null)} />
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-foreground mb-2">Admin Panel</h1>
-          <p className="text-muted-foreground">Manage users, content, and quizzes</p>
+          <h1 className="text-3xl font-bold text-foreground mb-2">
+            {isFacultyPanel ? 'Faculty Panel' : 'Admin Panel'}
+          </h1>
+          <p className="text-muted-foreground">
+            {isFacultyPanel
+              ? 'Manage quizzes and competitions'
+              : 'Manage users, content, and quizzes'}
+          </p>
         </div>
 
         {activeTab === 'users' && (
           <>
-            <Card>
+            <Card className="mb-6 border-primary/20 shadow-sm">
               <CardHeader>
-                <CardTitle>User Management</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {usersLoading && <p className="text-sm text-muted-foreground">Loading users...</p>}
-                {usersError && <p className="text-sm text-red-600">{usersError}</p>}
-                {!usersLoading && !usersError && (
-                  <div className="space-y-4">
-                    {usersList.map(u => (
-                      <div key={u._id} className="flex items-center justify-between p-4 border rounded-lg">
-                        <div>
-                          <p className="font-medium">{u.name}</p>
-                          <p className="text-sm text-muted-foreground">{u.email}</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <span className="px-2 py-1 bg-primary/10 text-primary rounded text-sm">
-                            {u.role}
-                          </span>
-                          <Button 
-                            size="sm" 
-                            variant="outline"
-                            onClick={() => {
-                              setEditingUser(u);
-                              setEditingUserForm({
-                                name: u.name,
-                                phone: u.profile?.phone || '',
-                                college: u.profile?.college || '',
-                                branch: u.profile?.branch || '',
-                                year: u.profile?.year || '',
-                                studentId: u.profile?.studentId || '',
-                                department: u.profile?.department || '',
-                                class: u.profile?.class || '',
-                                division: u.profile?.division || '',
-                                skills: u.profile?.skills?.join(', ') || ''
-                              });
-                            }}
-                          >
-                            <Edit className="h-3 w-3 mr-1" /> Edit
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={async () => {
-                              if (!confirm(`Are you sure you want to delete user "${u.name}" (${u.email})? This action cannot be undone.`)) return;
-                              try {
-                                await api.deleteUser(u._id);
-                                toast({ 
-                                  title: 'Success', 
-                                  description: 'User deleted successfully.' 
-                                });
-                                // Refresh users list
-                                const res = await api.getAllUsers(1, 50);
-                                const list = res.data?.users || [];
-                                setUsersList(list);
-                              } catch (e) {
-                                toast({ 
-                                  title: 'Error', 
-                                  description: e.message || 'Failed to delete user', 
-                                  variant: 'destructive' 
-                                });
-                              }
-                            }}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        </div>
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Users className="h-5 w-5" /> Student Management
+                    </CardTitle>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Organize students by department, academic year, and class with a scalable admin dashboard.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {summaryStats.map((item) => (
+                      <div key={item.label} className="rounded-lg border bg-background px-3 py-2 min-w-[120px] shadow-sm">
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">{item.label}</p>
+                        <p className="text-lg font-semibold">{item.value}</p>
                       </div>
                     ))}
-                    {usersList.length === 0 && (
-                      <p className="text-sm text-muted-foreground">No users found.</p>
-                    )}
                   </div>
-                )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4 lg:grid-cols-[2fr_1fr_1fr]">
+                  <div className="space-y-2">
+                    <Label htmlFor="user-search">Search students</Label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="user-search"
+                        value={userSearch}
+                        onChange={(e) => setUserSearch(e.target.value)}
+                        placeholder="Search by name, email, or student ID"
+                        className="pl-9"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="student-status">Status</Label>
+                    <Select value={studentStatusFilter} onValueChange={setStudentStatusFilter}>
+                      <SelectTrigger id="student-status">
+                        <SelectValue placeholder="All status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All status</SelectItem>
+                        <SelectItem value="active">Active</SelectItem>
+                        <SelectItem value="inactive">Inactive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="student-domain">Domain</Label>
+                    <Select value={studentDomainFilter} onValueChange={setStudentDomainFilter}>
+                      <SelectTrigger id="student-domain">
+                        <SelectValue placeholder="All domains" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All domains</SelectItem>
+                        {Array.from(new Set(studentUsers.flatMap((student) => [student.profile?.domain, student.profile?.skills].flat().filter(Boolean)).map((value) => value?.toString().trim()).filter(Boolean)) ).sort().map((domain) => (
+                          <SelectItem key={domain} value={domain}>{domain}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
               </CardContent>
             </Card>
+
+            <div className="grid gap-6 lg:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle>Create Faculty Account</CardTitle>
+                    <Badge variant="secondary">Quick Add</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    Faculty log in with the email and password you set here. They can manage quizzes and competitions only.
+                  </p>
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-name">Full name</Label>
+                      <Input
+                        id="faculty-name"
+                        value={facultyForm.name}
+                        onChange={(e) => setFacultyForm((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="Faculty name"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-email">Email (login ID)</Label>
+                      <Input
+                        id="faculty-email"
+                        type="email"
+                        value={facultyForm.email}
+                        onChange={(e) => setFacultyForm((prev) => ({ ...prev, email: e.target.value }))}
+                        placeholder="faculty@college.edu"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-password">Password</Label>
+                      <Input
+                        id="faculty-password"
+                        type="password"
+                        value={facultyForm.password}
+                        onChange={(e) => setFacultyForm((prev) => ({ ...prev, password: e.target.value }))}
+                        placeholder="Min. 6 characters"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button
+                      disabled={creatingFaculty}
+                      onClick={async () => {
+                        const { name, email, password } = facultyForm;
+                        if (!name?.trim() || !email?.trim() || !password) {
+                          toast({
+                            title: 'Validation Error',
+                            description: 'Name, email, and password are required',
+                            variant: 'destructive',
+                          });
+                          return;
+                        }
+                        if (password.length < 6) {
+                          toast({
+                            title: 'Validation Error',
+                            description: 'Password must be at least 6 characters',
+                            variant: 'destructive',
+                          });
+                          return;
+                        }
+                        try {
+                          setCreatingFaculty(true);
+                          await api.createFaculty({
+                            name: name.trim(),
+                            email: email.trim(),
+                            password,
+                          });
+                          toast({
+                            title: 'Success',
+                            description: 'Faculty account created successfully',
+                          });
+                          setFacultyForm({ name: '', email: '', password: '' });
+                          await refreshUsers();
+                        } catch (error) {
+                          toast({
+                            title: 'Error',
+                            description: error.message || 'Failed to create faculty account',
+                            variant: 'destructive',
+                          });
+                        } finally {
+                          setCreatingFaculty(false);
+                        }
+                      }}
+                    >
+                      {creatingFaculty ? 'Creating...' : 'Create Faculty'}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle>Import Templates</CardTitle>
+                    <Badge variant="outline">Faculty / Student</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    Download ready-made Excel templates for importing faculty and student accounts.
+                  </p>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Card className="border border-border bg-background shadow-sm">
+                      <CardHeader>
+                        <CardTitle className="text-base">Faculty Import</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-sm text-muted-foreground">Use this file to bulk import faculty accounts with name, email, and password.</p>
+                        <Button variant="outline" onClick={downloadFacultyImportTemplate} className="w-full gap-2">
+                          <Download className="h-4 w-4" /> Download Faculty Template
+                        </Button>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border border-border bg-background shadow-sm">
+                      <CardHeader>
+                        <CardTitle className="text-base">Student Import</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-sm text-muted-foreground">Use this file to bulk import student accounts with department, class, and login details.</p>
+                        <Button variant="outline" onClick={downloadStudentImportTemplate} className="w-full gap-2">
+                          <Download className="h-4 w-4" /> Download Student Template
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="mt-6 space-y-6">
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2"><Building2 className="h-5 w-5" /> Departments</CardTitle>
+                      <p className="text-sm text-muted-foreground">Open a department to view its academic years and classes.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" onClick={resetStudentHierarchy} className="gap-2"><LayoutGrid className="h-4 w-4" /> Reset</Button>
+                      <Button onClick={openStudentCreator} className="gap-2"><Plus className="h-4 w-4" /> Add Student</Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {usersLoading && <p className="text-sm text-muted-foreground">Loading student hierarchy...</p>}
+                  {usersError && <p className="text-sm text-red-600">{usersError}</p>}
+                  {!usersLoading && !usersError && (
+                    <div className="space-y-4">
+                      {!selectedDepartment && !selectedYear && !selectedClass && (
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {departmentOptions.length === 0 && <p className="text-sm text-muted-foreground">No departments available yet.</p>}
+                          {departmentOptions.map((department) => {
+                            const deptStudents = departmentGroups[department]?.students || [];
+                            const years = Object.keys(departmentGroups[department]?.years || {}).length;
+                            const classes = departmentGroups[department]?.classes?.size || 0;
+                            return (
+                              <div key={department} className="rounded-2xl border bg-background p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-semibold text-primary">{department}</p>
+                                    <h3 className="mt-1 text-xl font-semibold">{department}</h3>
+                                  </div>
+                                  <Badge variant="secondary">{deptStudents.length} students</Badge>
+                                </div>
+                                <div className="mt-4 grid gap-2 text-sm text-muted-foreground">
+                                  <div className="flex items-center justify-between"><span>Years</span><span>{years}</span></div>
+                                  <div className="flex items-center justify-between"><span>Classes</span><span>{classes}</span></div>
+                                  <div className="flex items-center justify-between"><span>Active</span><span>{deptStudents.filter((student) => student.isActive !== false).length}</span></div>
+                                </div>
+                                <Button className="mt-5 w-full" onClick={() => { setSelectedDepartment(department); setSelectedYear(''); setSelectedClass(''); setStudentPage(1); }}>Open Department</Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {selectedDepartment && !selectedYear && !selectedClass && (
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Button variant="ghost" size="sm" onClick={() => { setSelectedDepartment(''); setSelectedYear(''); setSelectedClass(''); setStudentPage(1); }} className="gap-2"><ArrowLeft className="h-4 w-4" /> Back to Departments</Button>
+                            <ChevronRight className="h-4 w-4" />
+                            <span className="font-medium text-foreground">{selectedDepartment}</span>
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            {Object.keys(departmentGroups[selectedDepartment]?.years || {}).sort((a, b) => a.localeCompare(b)).map((year) => {
+                              const yearStudents = departmentGroups[selectedDepartment].years[year] || [];
+                              return (
+                                <div key={year} className="rounded-2xl border bg-background p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-sm font-semibold text-primary">Academic Year</p>
+                                      <h3 className="mt-1 text-xl font-semibold">Year {year}</h3>
+                                    </div>
+                                    <Badge variant="outline">{yearStudents.length}</Badge>
+                                  </div>
+                                  <Button className="mt-5 w-full" onClick={() => { setSelectedYear(year); setSelectedClass(''); setStudentPage(1); }}>Open Year</Button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedDepartment && selectedYear && !selectedClass && (
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Button variant="ghost" size="sm" onClick={() => { setSelectedDepartment(selectedDepartment); setSelectedYear(''); setSelectedClass(''); setStudentPage(1); }} className="gap-2"><ArrowLeft className="h-4 w-4" /> Back to Year List</Button>
+                            <ChevronRight className="h-4 w-4" />
+                            <span className="font-medium text-foreground">{selectedDepartment}</span>
+                            <ChevronRight className="h-4 w-4" />
+                            <span className="font-medium text-foreground">Year {selectedYear}</span>
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            {classOptions.map((className) => {
+                              const classStudents = filteredYearStudents.filter((student) => (student.profile?.class || 'Unassigned') === className);
+                              return (
+                                <div key={className} className="rounded-2xl border bg-background p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-sm font-semibold text-primary">Class</p>
+                                      <h3 className="mt-1 text-xl font-semibold">{className}</h3>
+                                    </div>
+                                    <Badge variant="outline">{classStudents.length}</Badge>
+                                  </div>
+                                  <Button className="mt-5 w-full" onClick={() => { setSelectedClass(className); setStudentPage(1); }}>Open Class</Button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedDepartment && selectedYear && selectedClass && (
+                        <div className="space-y-4">
+                          <div className="flex items-center flex-wrap gap-2 text-sm text-muted-foreground">
+                            <Button variant="ghost" size="sm" onClick={() => { setSelectedClass(''); setStudentPage(1); }} className="gap-2"><ArrowLeft className="h-4 w-4" /> Back to Classes</Button>
+                            <ChevronRight className="h-4 w-4" />
+                            <span className="font-medium text-foreground">{selectedDepartment}</span>
+                            <ChevronRight className="h-4 w-4" />
+                            <span className="font-medium text-foreground">Year {selectedYear}</span>
+                            <ChevronRight className="h-4 w-4" />
+                            <span className="font-medium text-foreground">{selectedClass}</span>
+                          </div>
+
+                          <div className="flex flex-col gap-4 rounded-2xl border bg-muted/20 p-4 md:flex-row md:items-center md:justify-between">
+                            <div>
+                              <h3 className="text-lg font-semibold">{selectedClass}</h3>
+                              <p className="text-sm text-muted-foreground">Manage {visibleStudents.length} student{visibleStudents.length === 1 ? '' : 's'} in this class.</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button variant="outline" onClick={handleBulkDelete} className="gap-2"><Trash2 className="h-4 w-4" /> Delete Selected</Button>
+                              <Button variant="outline" onClick={handleBulkDeactivate} className="gap-2"><ShieldCheck className="h-4 w-4" /> Deactivate Selected</Button>
+                              <Button variant="outline" onClick={() => { setBulkEditForm({ year: selectedYear || '', class: selectedClass || '', division: '', domain: '' }); setBulkEditOpen(true); }} className="gap-2"><Edit className="h-4 w-4" /> Bulk Edit Selected</Button>
+                              <Button variant="outline" onClick={handleExportSelected} className="gap-2"><Download className="h-4 w-4" /> Export Selected</Button>
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl border bg-background p-4 shadow-sm">
+                                <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <GraduationCap className="h-5 w-5 text-primary" />
+                                    <div>
+                                      <p className="font-semibold">Student List</p>
+                                      <p className="text-sm text-muted-foreground">Search and manage students inside the selected class.</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <label className="flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm hover:bg-muted">
+                                      <FileSpreadsheet className="h-4 w-4" />
+                                      <span>Select Excel</span>
+                                      <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleStudentImportFileChange} />
+                                    </label>
+                                    <Button variant="outline" size="sm" onClick={downloadStudentImportTemplate} className="gap-2">
+                                      <Download className="h-4 w-4" />
+                                      Download Template
+                                    </Button>
+                                    {studentImportFile && (
+                                      <Button variant="secondary" size="sm" onClick={handleStudentImport} className="gap-2" disabled={studentImportLoading}>
+                                        <Upload className="h-4 w-4" />
+                                        {studentImportLoading ? 'Importing...' : 'Import Students'}
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="overflow-x-auto rounded-xl border">
+                                  <table className="min-w-full divide-y divide-border text-sm">
+                                    <thead className="bg-muted/40">
+                                      <tr>
+                                        <th className="px-3 py-3 text-left">
+                                          <Checkbox
+                                            checked={isAllCurrentPageSelected}
+                                            indeterminate={isSomeCurrentPageSelected && !isAllCurrentPageSelected}
+                                            onCheckedChange={(checked) => {
+                                              if (checked) {
+                                                setSelectedStudentIds((prev) => Array.from(new Set([...prev, ...currentPageStudentIds])));
+                                              } else {
+                                                setSelectedStudentIds((prev) => prev.filter((id) => !currentPageStudentIds.includes(id)));
+                                              }
+                                            }}
+                                          />
+                                        </th>
+                                        <th className="px-3 py-3 text-left">Profile</th>
+                                        <th className="px-3 py-3 text-left">Name</th>
+                                        <th className="px-3 py-3 text-left">Student ID</th>
+                                        <th className="px-3 py-3 text-left">Email</th>
+                                        <th className="px-3 py-3 text-left">Domain</th>
+                                        <th className="px-3 py-3 text-left">Status</th>
+                                        <th className="px-3 py-3 text-left">Actions</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-border bg-background">
+                                      {pagedStudents.length === 0 ? (
+                                        <tr>
+                                          <td colSpan={8} className="px-3 py-10 text-center text-sm text-muted-foreground">
+                                            {visibleStudents.length === 0
+                                              ? 'No students found in this class. Check the department, year, and class selection.'
+                                              : 'No students on this page. Please go back to the first page.'}
+                                          </td>
+                                        </tr>
+                                      ) : pagedStudents.map((student) => (
+                                        <tr key={student._id} className="hover:bg-muted/30">
+                                          <td className="px-3 py-3"><Checkbox checked={selectedStudentIds.includes(student._id)} onCheckedChange={() => toggleStudentSelection(student._id)} /></td>
+                                          <td className="px-3 py-3"><Button variant="ghost" size="icon" onClick={() => openStudentDetails(student)}><Eye className="h-4 w-4" /></Button></td>
+                                          <td className="px-3 py-3">
+                                            <div>
+                                              <p className="font-medium">{student.name}</p>
+                                              <p className="text-xs text-muted-foreground">{student.profile?.division || '—'}</p>
+                                            </div>
+                                          </td>
+                                          <td className="px-3 py-3">{student.profile?.studentId || '—'}</td>
+                                          <td className="px-3 py-3">{student.email}</td>
+                                          <td className="px-3 py-3">{student.profile?.domain?.join(', ') || '—'}</td>
+                                          <td className="px-3 py-3"><Badge variant={student.isActive === false ? 'destructive' : 'secondary'}>{student.isActive === false ? 'Inactive' : 'Active'}</Badge></td>
+                                          <td className="px-3 py-3">
+                                            <div className="flex flex-wrap gap-2">
+                                              <Button size="sm" variant="outline" onClick={() => openStudentDetails(student)}><Eye className="h-3 w-3 mr-1" /> View</Button>
+                                              <Button size="sm" variant="outline" onClick={() => { setEditingUser(student); setEditingUserForm({ name: student.name, phone: student.profile?.phone || '', college: student.profile?.college || '', branch: student.profile?.branch || '', year: student.profile?.year || '', studentId: student.profile?.studentId || '', department: student.profile?.department || '', class: student.profile?.class || '', division: student.profile?.division || '', domain: student.profile?.domain?.join(', ') || student.profile?.skills?.join(', ') || '', password: '' }); }}><Edit className="h-3 w-3 mr-1" /> Edit</Button>
+                                              <Button size="sm" variant="destructive" onClick={async () => { if (!confirm(`Delete ${student.name}?`)) return; try { await api.deleteUser(student._id); toast({ title: 'Deleted', description: 'Student removed.' }); await refreshUsers(); } catch (e) { toast({ title: 'Error', description: e.message || 'Failed to delete student', variant: 'destructive' }); } }}><Trash2 className="h-3 w-3" /></Button>
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                <div className="mt-4 flex items-center justify-between">
+                                  <p className="text-sm text-muted-foreground">Showing {pagedStudents.length} of {visibleStudents.length} students</p>
+                                  <div className="flex gap-2">
+                                    <Button variant="outline" size="sm" disabled={studentPage === 1} onClick={() => setStudentPage((page) => Math.max(1, page - 1))}>Previous</Button>
+                                    <Button variant="outline" size="sm" disabled={studentPage >= studentPageCount} onClick={() => setStudentPage((page) => Math.min(studentPageCount, page + 1))}>Next</Button>
+                                  </div>
+                                </div>
+                              </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            <Sheet open={bulkEditOpen} onOpenChange={setBulkEditOpen}>
+              <SheetContent side="right" className="w-full sm:max-w-xl">
+                <SheetHeader>
+                  <SheetTitle>Bulk Edit Students</SheetTitle>
+                  <SheetDescription>Update the shared academic fields for {selectedStudents.length} selected student{selectedStudents.length === 1 ? '' : 's'}.</SheetDescription>
+                </SheetHeader>
+
+                <div className="mt-6 space-y-5">
+                  <div className="rounded-2xl border bg-background p-4">
+                    <p className="text-sm text-muted-foreground">Leave any field blank to keep that value unchanged.</p>
+                    <div className="mt-4 space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="bulk-year">Academic Year</Label>
+                        <Input
+                          id="bulk-year"
+                          value={bulkEditForm.year}
+                          onChange={(e) => setBulkEditForm((prev) => ({ ...prev, year: e.target.value }))}
+                          placeholder="e.g. 2024"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="bulk-class">Class</Label>
+                        <Input
+                          id="bulk-class"
+                          value={bulkEditForm.class}
+                          onChange={(e) => setBulkEditForm((prev) => ({ ...prev, class: e.target.value }))}
+                          placeholder="e.g. CSE1"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="bulk-division">Division</Label>
+                        <Select
+                          value={bulkEditForm.division}
+                          onValueChange={(value) => setBulkEditForm((prev) => ({ ...prev, division: value }))}
+                        >
+                          <SelectTrigger id="bulk-division">
+                            <SelectValue placeholder="Select division" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {['A', 'B', 'C', 'D'].map((div) => (
+                              <SelectItem key={div} value={div}>{div}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="bulk-domain">Domain (comma-separated)</Label>
+                        <Input
+                          id="bulk-domain"
+                          value={bulkEditForm.domain}
+                          onChange={(e) => setBulkEditForm((prev) => ({ ...prev, domain: e.target.value }))}
+                          placeholder="e.g. Web Development, AI"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setBulkEditOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button onClick={handleBulkEdit} disabled={bulkEditSaving || !selectedStudents.length}>
+                      {bulkEditSaving ? 'Updating...' : `Apply to ${selectedStudents.length} Student${selectedStudents.length === 1 ? '' : 's'}`}
+                    </Button>
+                  </div>
+                </div>
+              </SheetContent>
+            </Sheet>
+
+            <Sheet open={showStudentCreator} onOpenChange={setShowStudentCreator}>
+              <SheetContent side="right" className="w-full sm:max-w-xl">
+                <SheetHeader>
+                  <SheetTitle>Add New Student</SheetTitle>
+                  <SheetDescription>Create a student account and assign academic details.</SheetDescription>
+                </SheetHeader>
+
+                <div className="mt-6 space-y-5 max-h-[calc(100vh-7rem)] overflow-y-auto pr-2">
+                  <div className="rounded-2xl border bg-background p-4">
+                    <div className="space-y-2">
+                      <Label>Department</Label>
+                      <Select value={studentForm.department} onValueChange={(value) => setStudentForm((prev) => ({ ...prev, department: value }))}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select department" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['CE', 'CSE', 'IT'].map((dept) => (
+                            <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Academic Year</Label>
+                      <Input value={studentForm.year} onChange={(e) => setStudentForm((prev) => ({ ...prev, year: e.target.value }))} placeholder="e.g. 1, 2, 3, 4" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Class</Label>
+                      <Input value={studentForm.class} onChange={(e) => setStudentForm((prev) => ({ ...prev, class: e.target.value }))} placeholder="e.g. CSE1" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Division</Label>
+                      <Select value={studentForm.division} onValueChange={(value) => setStudentForm((prev) => ({ ...prev, division: value }))}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select division" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['A', 'B', 'C', 'D'].map((div) => (
+                            <SelectItem key={div} value={div}>{div}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Student Name</Label>
+                      <Input value={studentForm.name} onChange={(e) => setStudentForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Student name" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Email</Label>
+                      <Input type="email" value={studentForm.email} onChange={(e) => setStudentForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="student@college.edu" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Password</Label>
+                      <Input type="password" value={studentForm.password} onChange={(e) => setStudentForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Min. 6 characters" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Student ID</Label>
+                      <Input value={studentForm.studentId} onChange={(e) => setStudentForm((prev) => ({ ...prev, studentId: e.target.value }))} placeholder="12345" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Domain</Label>
+                      <Input value={studentForm.domain} onChange={(e) => setStudentForm((prev) => ({ ...prev, domain: e.target.value }))} placeholder="Web Development, AI" />
+                    </div>
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" onClick={() => setShowStudentCreator(false)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        className="w-full"
+                        disabled={creatingStudent}
+                        onClick={async () => {
+                          if (!studentForm.name?.trim() || !studentForm.email?.trim() || !studentForm.password) {
+                            toast({ title: 'Validation Error', description: 'Name, email, and password are required', variant: 'destructive' });
+                            return;
+                          }
+                          if (studentForm.password.length < 6) {
+                            toast({ title: 'Validation Error', description: 'Password must be at least 6 characters', variant: 'destructive' });
+                            return;
+                          }
+                          try {
+                            setCreatingStudent(true);
+                            await api.createStudent({
+                              name: studentForm.name.trim(),
+                              email: studentForm.email.trim(),
+                              password: studentForm.password,
+                              studentId: studentForm.studentId.trim(),
+                              department: studentForm.department,
+                              year: studentForm.year,
+                              class: studentForm.class,
+                              division: studentForm.division || '',
+                              domain: studentForm.domain
+                            });
+                            toast({ title: 'Success', description: 'Student created successfully.' });
+                            setStudentForm((prev) => ({ ...prev, name: '', email: '', password: '', studentId: '', division: '', domain: '' }));
+                            setShowStudentCreator(false);
+                            await refreshUsers();
+                          } catch (error) {
+                            toast({ title: 'Error', description: error.message || 'Failed to create student', variant: 'destructive' });
+                          } finally {
+                            setCreatingStudent(false);
+                          }
+                        }}
+                      >
+                        {creatingStudent ? 'Creating...' : 'Create Student'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </SheetContent>
+            </Sheet>
+
+            <Sheet open={studentDrawerOpen} onOpenChange={setStudentDrawerOpen}>
+              <SheetContent side="right" className="w-full sm:max-w-xl">
+                <SheetHeader>
+                  <SheetTitle>{selectedStudent?.name || 'Student Profile'}</SheetTitle>
+                  <SheetDescription>Review academic details and perform quick account actions.</SheetDescription>
+                </SheetHeader>
+                {selectedStudent && (
+                  <div className="mt-6 space-y-5">
+                    <div className="rounded-2xl border bg-background p-4">
+                      <h3 className="font-semibold">Basic Details</h3>
+                      <div className="mt-3 grid gap-3 text-sm">
+                        <div className="flex justify-between"><span className="text-muted-foreground">Name</span><span>{selectedStudent.name}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Email</span><span>{selectedStudent.email}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Student ID</span><span>{selectedStudent.profile?.studentId || '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Phone</span><span>{selectedStudent.profile?.phone || '—'}</span></div>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border bg-background p-4">
+                      <h3 className="font-semibold">Academic Details</h3>
+                      <div className="mt-3 grid gap-3 text-sm">
+                        <div className="flex justify-between"><span className="text-muted-foreground">Department</span><span>{selectedStudent.profile?.department || '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Year</span><span>{selectedStudent.profile?.year || '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Class</span><span>{selectedStudent.profile?.class || '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Division</span><span>{selectedStudent.profile?.division || '—'}</span></div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" onClick={() => { setEditingUser(selectedStudent); setEditingUserForm({ name: selectedStudent.name, phone: selectedStudent.profile?.phone || '', college: selectedStudent.profile?.college || '', branch: selectedStudent.profile?.branch || '', year: selectedStudent.profile?.year || '', studentId: selectedStudent.profile?.studentId || '', department: selectedStudent.profile?.department || '', class: selectedStudent.profile?.class || '', division: selectedStudent.profile?.division || '', domain: selectedStudent.profile?.domain?.join(', ') || selectedStudent.profile?.skills?.join(', ') || '', password: '' }); setStudentDrawerOpen(false); }}>Edit</Button>
+                      <Button variant="outline" onClick={async () => { if (!confirm('Deactivate this student?')) return; try { await api.deactivateUser(selectedStudent._id); toast({ title: 'Updated', description: 'Student deactivated.' }); setStudentDrawerOpen(false); await refreshUsers(); } catch (error) { toast({ title: 'Error', description: error.message || 'Failed to deactivate student', variant: 'destructive' }); } }}>Deactivate</Button>
+                      <Button variant="destructive" onClick={async () => { if (!confirm('Delete this student?')) return; try { await api.deleteUser(selectedStudent._id); toast({ title: 'Deleted', description: 'Student removed.' }); setStudentDrawerOpen(false); await refreshUsers(); } catch (error) { toast({ title: 'Error', description: error.message || 'Failed to delete student', variant: 'destructive' }); } }}>Delete</Button>
+                    </div>
+                  </div>
+                )}
+              </SheetContent>
+            </Sheet>
 
             {/* Edit User Modal */}
             {editingUser && editingUserForm && (
@@ -1310,6 +2460,19 @@ const AdminPanel = () => {
                       onChange={(e) => setEditingUserForm({ ...editingUserForm, phone: e.target.value })}
                     />
                 </div>
+
+                {editingUser.role === 'faculty' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-faculty-password">New password (optional)</Label>
+                    <Input
+                      id="edit-faculty-password"
+                      type="password"
+                      value={editingUserForm.password || ''}
+                      onChange={(e) => setEditingUserForm({ ...editingUserForm, password: e.target.value })}
+                      placeholder="Leave blank to keep current password"
+                    />
+                  </div>
+                )}
 
                 {editingUser.role === 'student' && (
                   <>
@@ -1357,6 +2520,16 @@ const AdminPanel = () => {
                     </div>
 
                     <div className="space-y-2">
+                      <Label htmlFor="edit-class">Class</Label>
+                      <Input
+                        id="edit-class"
+                        value={editingUserForm.class}
+                        onChange={(e) => setEditingUserForm({ ...editingUserForm, class: e.target.value })}
+                        placeholder="e.g. CE-3A"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
                       <Label htmlFor="edit-division">Division</Label>
                       <Select 
                         value={editingUserForm.division} 
@@ -1376,12 +2549,12 @@ const AdminPanel = () => {
                 )}
 
                 <div className="space-y-2">
-                  <Label htmlFor="edit-skills">Skills (comma-separated)</Label>
+                  <Label htmlFor="edit-domain">Domain (comma-separated)</Label>
                   <Input
-                    id="edit-skills"
-                    value={editingUserForm.skills}
-                    onChange={(e) => setEditingUserForm({ ...editingUserForm, skills: e.target.value })}
-                    placeholder="e.g., JavaScript, React, Node.js"
+                    id="edit-domain"
+                    value={editingUserForm.domain}
+                    onChange={(e) => setEditingUserForm({ ...editingUserForm, domain: e.target.value })}
+                    placeholder="e.g., Web Development, AI"
                   />
                 </div>
 
@@ -1408,6 +2581,18 @@ const AdminPanel = () => {
 
                       try {
                         setSavingUser(true);
+
+                        if (editingUser.role === 'faculty' && editingUserForm.password?.trim()) {
+                          if (editingUserForm.password.trim().length < 6) {
+                            toast({
+                              title: 'Validation Error',
+                              description: 'Password must be at least 6 characters',
+                              variant: 'destructive',
+                            });
+                            return;
+                          }
+                        }
+
                         const profileData = {
                           name: editingUserForm.name,
                           phone: editingUserForm.phone,
@@ -1418,10 +2603,14 @@ const AdminPanel = () => {
                           department: editingUserForm.department,
                           class: editingUserForm.class,
                           division: editingUserForm.division,
-                          skills: editingUserForm.skills.split(',').map(s => s.trim()).filter(s => s)
+                          domain: editingUserForm.domain.split(',').map(s => s.trim()).filter(s => s)
                         };
 
                         const response = await api.updateUserProfile(editingUser._id, profileData);
+
+                        if (editingUser.role === 'faculty' && editingUserForm.password?.trim()) {
+                          await api.setUserPassword(editingUser._id, editingUserForm.password.trim());
+                        }
                         
                         if (response.success) {
                           toast({
@@ -1462,6 +2651,338 @@ const AdminPanel = () => {
             </Card>
             )}
           </>
+        )}
+
+        {activeTab === 'results' && (
+          <Card className="border-0 shadow-none">
+            <CardHeader className="rounded-2xl border bg-slate-950 px-6 py-6 text-white">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="mb-2 inline-flex items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-slate-200">
+                    Competition Dashboard
+                  </div>
+                  <CardTitle className="text-2xl font-semibold text-white">Competition Results</CardTitle>
+                  <p className="mt-2 max-w-3xl text-sm text-slate-300">
+                    Browse placement-style competitions, review live performance metrics, and open analytics for any selected competition.
+                  </p>
+                </div>
+                <div className="w-full max-w-sm">
+                  <Label className="text-xs uppercase tracking-[0.2em] text-slate-400">Search Competition</Label>
+                  <div className="relative mt-2">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      value={competitionSearch}
+                      onChange={(e) => setCompetitionSearch(e.target.value)}
+                      placeholder="Search by competition name"
+                      className="border-white/20 bg-white/10 pl-9 text-white placeholder:text-slate-400"
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6 px-0 pb-0">
+              <div className="grid gap-4 xl:grid-cols-3 lg:grid-cols-2">
+                {competitions.filter((competition) => {
+                  const query = competitionSearch.trim().toLowerCase();
+                  if (!query) return true;
+                  const title = (competition.title || '').toLowerCase();
+                  const quizTitle = Array.isArray(competition.relatedQuizzes) && competition.relatedQuizzes[0]?.title
+                    ? competition.relatedQuizzes[0].title.toLowerCase()
+                    : '';
+                  return title.includes(query) || quizTitle.includes(query);
+                }).map((competition) => {
+                  const isSelected = selectedCompetitionId === competition._id;
+                  const quizTitle = Array.isArray(competition.relatedQuizzes) && competition.relatedQuizzes[0]?.title
+                    ? competition.relatedQuizzes[0].title
+                    : 'Multiple quizzes';
+                  const createdBy = competition.createdBy
+                    ? (typeof competition.createdBy === 'object'
+                      ? (competition.createdBy.role === 'admin' ? 'Admin' : competition.createdBy.name || 'Faculty')
+                      : competition.createdBy)
+                    : 'Faculty';
+                  const createdDate = competition.createdAt
+                    ? format(new Date(competition.createdAt), 'dd MMM yyyy')
+                    : '—';
+                  const startTime = competition.startDate
+                    ? format(new Date(competition.startDate), 'dd MMM yyyy, HH:mm')
+                    : '—';
+                  const endTime = competition.endDate
+                    ? format(new Date(competition.endDate), 'dd MMM yyyy, HH:mm')
+                    : '—';
+                  const status = new Date(competition.endDate) < new Date() ? 'Completed' : 'Active';
+                  const stats = competitionStats[competition._id] || { appeared: '—', avgScore: '—' };
+                  const appearedCount = isSelected && candidateResults.length ? candidateResults.length : stats.appeared;
+                  const averageScore = isSelected && candidateResults.length
+                    ? `${Math.round(candidateResults.reduce((sum, result) => sum + (result.percentage ?? 0), 0) / candidateResults.length)}%`
+                    : (stats.avgScore === '—' ? '—' : `${stats.avgScore}%`);
+
+                  return (
+                    <button
+                      key={competition._id}
+                      type="button"
+                      onClick={() => {
+                        navigate(`/admin/competition/${competition._id}`);
+                      }}
+                      className={`rounded-2xl border p-5 text-left transition ${isSelected ? 'border-slate-900 bg-slate-900 text-white shadow-lg' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${isSelected ? 'bg-white/10 text-slate-200' : 'bg-slate-100 text-slate-700'}`}>
+                          {status === 'Active' ? '🟢 Active' : '🔵 Completed'}
+                        </div>
+                        <div className={`text-sm ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>
+                          {isSelected ? 'Selected' : 'View Analytics →'}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 space-y-2">
+                        <div className={`text-lg font-semibold ${isSelected ? 'text-white' : 'text-slate-900'}`}>{competition.title || 'Untitled Competition'}</div>
+                        <div className={`text-sm ${isSelected ? 'text-slate-300' : 'text-slate-600'}`}>
+                          <span className="font-medium">Quiz:</span> {quizTitle}
+                        </div>
+                        <div className={`text-sm ${isSelected ? 'text-slate-300' : 'text-slate-600'}`}>
+                          <span className="font-medium">Created By:</span> {createdBy}
+                        </div>
+                        <div className={`text-sm ${isSelected ? 'text-slate-300' : 'text-slate-600'}`}>
+                          <span className="font-medium">Created Date:</span> {createdDate}
+                        </div>
+                      </div>
+
+                      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                        <div className={`rounded-xl border p-3 text-sm ${isSelected ? 'border-white/10 bg-white/10' : 'border-slate-200 bg-slate-50'}`}>
+                          <div className={`text-xs uppercase tracking-[0.2em] ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>Assigned Students</div>
+                          <div className={`mt-1 text-lg font-semibold ${isSelected ? 'text-white' : 'text-slate-900'}`}>500</div>
+                        </div>
+                        <div className={`rounded-xl border p-3 text-sm ${isSelected ? 'border-white/10 bg-white/10' : 'border-slate-200 bg-slate-50'}`}>
+                          <div className={`text-xs uppercase tracking-[0.2em] ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>Appeared Students</div>
+                          <div className={`mt-1 text-lg font-semibold ${isSelected ? 'text-white' : 'text-slate-900'}`}>{appearedCount}</div>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <div className={`rounded-xl border p-3 text-sm ${isSelected ? 'border-white/10 bg-white/10' : 'border-slate-200 bg-slate-50'}`}>
+                          <div className={`text-xs uppercase tracking-[0.2em] ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>Average Score</div>
+                          <div className={`mt-1 text-lg font-semibold ${isSelected ? 'text-white' : 'text-slate-900'}`}>{averageScore}</div>
+                        </div>
+                        <div className={`rounded-xl border p-3 text-sm ${isSelected ? 'border-white/10 bg-white/10' : 'border-slate-200 bg-slate-50'}`}>
+                          <div className={`text-xs uppercase tracking-[0.2em] ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>Time Window</div>
+                          <div className={`mt-1 text-sm ${isSelected ? 'text-slate-200' : 'text-slate-700'}`}>{startTime}</div>
+                          <div className={`text-sm ${isSelected ? 'text-slate-200' : 'text-slate-700'}`}>{endTime}</div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {competitions.length === 0 && !competitionsLoading && (
+                <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                  No competitions were found for this workspace.
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-800">Selected competition</div>
+                    <div className="text-sm text-slate-600">
+                      {selectedCompetitionId
+                        ? competitions.find((competition) => competition._id === selectedCompetitionId)?.title || 'Loaded analytics for the selected competition.'
+                        : 'Choose a competition card to open its analytics view.'}
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => downloadCandidateMarksPdf(candidateResults, {
+                      reportTitle: competitions.find((competition) => competition._id === selectedCompetitionId)?.title || 'Competition Results',
+                      generatedAt: new Date().toLocaleString(),
+                    })}
+                    disabled={candidateResults.length === 0 || !selectedCompetitionId}
+                  >
+                    <Download className="mr-2 h-4 w-4" /> Download PDF
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div className="space-y-1">
+                      <div className="text-sm font-semibold text-slate-900">Dashboard Summary</div>
+                      <div className="text-sm text-slate-600">
+                        <span className="font-medium text-slate-800">Competition:</span> {competitionTitle}
+                      </div>
+                      <div className="text-sm text-slate-600">
+                        <span className="font-medium text-slate-800">Quiz:</span> {selectedQuizTitle}
+                      </div>
+                    </div>
+                    <div className="w-full max-w-xs space-y-2">
+                      <Label htmlFor="quiz-stat-select">Select quiz for dashboard</Label>
+                      <Select
+                        value={selectedQuizIdForStats}
+                        onValueChange={(value) => {
+                          setSelectedQuizIdForStats(value);
+                          loadQuizAttemptStats(value);
+                        }}
+                      >
+                        <SelectTrigger id="quiz-stat-select">
+                          <SelectValue placeholder="Select a quiz" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {quizzesList.map((quiz) => (
+                            <SelectItem key={quiz._id} value={quiz._id}>{quiz.title}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+
+                {quizAttemptStatsLoading || quizResultsLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading quiz dashboard...</p>
+                ) : quizAttemptStatsError ? (
+                  <p className="text-sm text-red-600">{quizAttemptStatsError}</p>
+                ) : quizAttemptStats ? (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700 p-5 text-white shadow-sm">
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Students Attempted</div>
+                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.uniqueStudents}</div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Average Score</div>
+                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.averageScore ?? 0}%</div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Highest</div>
+                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.highestScore ?? 0}%</div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Lowest</div>
+                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.lowestScore ?? 0}%</div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Pass Rate</div>
+                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.passRate ?? 0}%</div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Avg Time</div>
+                          <div className="mt-2 text-2xl font-semibold">{formatDurationMinutes(quizAttemptStats.averageTimeMinutes * 60)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">Score Distribution</div>
+                            <div className="text-sm text-slate-500">A quick view of how challenging this quiz felt.</div>
+                          </div>
+                        </div>
+                        <div className="mt-4 h-72">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={scoreDistributionData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                              <XAxis dataKey="label" tickLine={false} axisLine={false} />
+                              <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                              <Tooltip />
+                              <Bar dataKey="count" fill="#2563eb" radius={[6, 6, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="text-sm font-semibold text-slate-900">Quiz Statistics</div>
+                          <div className="mt-3 space-y-3 text-sm text-slate-600">
+                            <div className="rounded-xl bg-slate-50 p-3">
+                              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Attempts</div>
+                              <div className="mt-1 text-lg font-semibold text-slate-900">{quizAttemptStats.totalAttempts}</div>
+                            </div>
+                            <div className="rounded-xl bg-slate-50 p-3">
+                              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Unique students</div>
+                              <div className="mt-1 text-lg font-semibold text-slate-900">{quizAttemptStats.uniqueStudents}</div>
+                            </div>
+                            <div className="rounded-xl bg-slate-50 p-3">
+                              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Average time</div>
+                              <div className="mt-1 text-lg font-semibold text-slate-900">{formatDurationMinutes(quizAttemptStats.averageTimeMinutes)}</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="text-sm font-semibold text-slate-900">Question Analysis</div>
+                          <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                            Use the attempt data to spot the questions that consistently pull the class average down.
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="text-sm font-semibold text-slate-900">Topic Analysis</div>
+                          <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                            Review topic-level performance trends and identify the topics that need more revision.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Student Performance Table</div>
+                          <div className="text-sm text-slate-500">Ranked by score, accuracy, and response time.</div>
+                        </div>
+                        <Badge variant="outline" className="w-fit">{rankedQuizResults.length} attempts</Badge>
+                      </div>
+                      <div className="mt-4 overflow-x-auto">
+                        <table className="min-w-full border-collapse text-sm">
+                          <thead>
+                            <tr className="border-b bg-slate-50 text-left">
+                              <th className="px-3 py-2">Rank</th>
+                              <th className="px-3 py-2">Student</th>
+                              <th className="px-3 py-2">Score</th>
+                              <th className="px-3 py-2">Accuracy</th>
+                              <th className="px-3 py-2">Time</th>
+                              <th className="px-3 py-2">Status</th>
+                              <th className="px-3 py-2">Report</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rankedQuizResults.map((result) => {
+                              const status = getPerformanceStatus(result.percentage ?? 0);
+                              return (
+                                <tr key={`${result.attemptId || result.studentId}-${result.name}`} className="border-b">
+                                  <td className="px-3 py-2 font-semibold text-slate-700">{result.rank}</td>
+                                  <td className="px-3 py-2">{result.name || '—'}</td>
+                                  <td className="px-3 py-2">{result.marks ?? 0}/{result.totalMarks ?? 0}</td>
+                                  <td className="px-3 py-2">{result.percentage ?? 0}%</td>
+                                  <td className="px-3 py-2">{formatDurationMinutes(result.timeTaken ?? 0)}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.tone}`}>
+                                      {status.label}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <Button variant="outline" size="sm">
+                                      <Eye className="mr-2 h-4 w-4" /> View
+                                    </Button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Select a quiz to see the dashboard summary.</p>
+                )}
+              </div>
+              {candidateResultsLoading && <p className="text-sm text-muted-foreground">Loading competition results...</p>}
+              {candidateResultsError && <p className="text-sm text-red-600">{candidateResultsError}</p>}
+            </CardContent>
+          </Card>
         )}
 
         {activeTab === 'content' && (
@@ -3061,6 +4582,83 @@ const AdminPanel = () => {
                           </div>
                         </div>
 
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                          <div className="flex items-center justify-between mb-3 gap-3">
+                            <div>
+                              <p className="font-medium">Eligibility Rules</p>
+                              <p className="text-sm text-slate-500">Choose who can enter this competition.</p>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div>
+                              <Label htmlFor="competition-eligibility-mode">Eligibility Mode</Label>
+                              <Select
+                                value={competitionForm.eligibilityMode}
+                                onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, eligibilityMode: value }))}
+                              >
+                                <SelectTrigger id="competition-eligibility-mode" className="h-11 rounded-2xl">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">All students</SelectItem>
+                                  <SelectItem value="departmentYearClass">Department / Year / Class</SelectItem>
+                                  <SelectItem value="domain">Domain</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div>
+                              <Label htmlFor="competition-eligible-domains">Domains (comma-separated)</Label>
+                              <Input
+                                id="competition-eligible-domains"
+                                placeholder="e.g. React, Node"
+                                value={competitionForm.eligibleDomains}
+                                onChange={(e) => setCompetitionForm((prev) => ({ ...prev, eligibleDomains: e.target.value }))}
+                                disabled={competitionForm.eligibilityMode !== 'domain'}
+                              />
+                            </div>
+                          </div>
+                          {competitionForm.eligibilityMode === 'departmentYearClass' && (
+                            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                              <div>
+                                <Label htmlFor="competition-eligible-department">Department</Label>
+                                <Select
+                                  value={competitionForm.eligibleDepartment}
+                                  onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, eligibleDepartment: value }))}
+                                >
+                                  <SelectTrigger id="competition-eligible-department" className="h-11 rounded-2xl">
+                                    <SelectValue placeholder="Select department" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="CE">CE</SelectItem>
+                                    <SelectItem value="CSE">CSE</SelectItem>
+                                    <SelectItem value="IT">IT</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div>
+                                <Label htmlFor="competition-eligible-class">Class</Label>
+                                <Select
+                                  value={competitionForm.eligibleClass}
+                                  onValueChange={(value) => setCompetitionForm((prev) => ({ ...prev, eligibleClass: value }))}
+                                >
+                                  <SelectTrigger id="competition-eligible-class" className="h-11 rounded-2xl">
+                                    <SelectValue placeholder={competitionEligibleClassOptions.length ? 'Select class' : 'No classes found'} />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {competitionEligibleClassOptions.length > 0 ? (
+                                      competitionEligibleClassOptions.map((className) => (
+                                        <SelectItem key={className} value={className}>{className}</SelectItem>
+                                      ))
+                                    ) : (
+                                      <div className="px-3 py-2 text-sm text-muted-foreground">No student classes found for this department yet.</div>
+                                    )}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div>
                             <Label htmlFor="competition-duration">Duration (minutes)</Label>
@@ -3182,6 +4780,13 @@ const AdminPanel = () => {
                                     <span>Start: {new Date(competition.startDate).toLocaleString()}</span>
                                     <span>End: {new Date(competition.endDate).toLocaleString()}</span>
                                     <span>Duration: {competition.durationMinutes} min</span>
+                                  </div>
+                                  <div className="text-xs text-slate-500">
+                                    Eligibility: {competition.eligibilityMode === 'departmentYearClass'
+                                      ? `Department ${competition.eligibleDepartment || 'any'}, Class ${competition.eligibleClass || 'any'}`
+                                      : competition.eligibilityMode === 'domain'
+                                        ? `Domain: ${(competition.eligibleDomains || []).join(', ') || 'any'}`
+                                        : 'All students'}
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">

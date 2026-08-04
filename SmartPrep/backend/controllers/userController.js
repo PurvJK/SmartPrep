@@ -1,5 +1,4 @@
 import User from '../models/User.js';
-import bcrypt from 'bcryptjs';
 
 // @desc    Get current user profile
 // @route   GET /api/users/profile
@@ -50,7 +49,7 @@ export const getProfile = async (req, res) => {
 // @access  Private
 export const updateProfile = async (req, res) => {
   try {
-    const { name, phone, college, branch, year, skills, studentId, department, class: studentClass, division } = req.body;
+    const { name, phone, college, branch, year, domain, skills, studentId, department, class: studentClass, division } = req.body;
     const userId = req.user.id;
 
     const updateData = {};
@@ -64,7 +63,11 @@ export const updateProfile = async (req, res) => {
     if (department !== undefined) updateData['profile.department'] = department;
     if (studentClass !== undefined) updateData['profile.class'] = studentClass;
     if (division !== undefined) updateData['profile.division'] = division;
-    if (skills !== undefined) updateData['profile.skills'] = skills;
+    if (domain !== undefined) {
+      updateData['profile.domain'] = domain;
+    } else if (skills !== undefined) {
+      updateData['profile.domain'] = skills;
+    }
 
     const user = await User.findByIdAndUpdate(
       userId,
@@ -280,6 +283,146 @@ export const getUserById = async (req, res) => {
   }
 };
 
+// @desc    Create student account/profile (Admin only)
+// @route   POST /api/users/student
+// @access  Private/Admin
+export const createStudent = async (req, res) => {
+  try {
+    const { name, email, password, studentId, department, year, class: studentClass, division, domain } = req.body;
+
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+      return res.status(400).json({
+        success: false,
+        message: 'User already exists with this email'
+      });
+    }
+
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role: 'student',
+      profile: {
+        studentId: studentId || '',
+        department: department || '',
+        year: year || '',
+        class: studentClass || '',
+        division: division || '',
+        domain: Array.isArray(domain) ? domain : (domain ? domain.split(',').map(item => item.trim()).filter(Boolean) : [])
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Student profile created successfully',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          isActive: user.isActive,
+          profile: user.profile,
+          createdAt: user.createdAt
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Create student error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// @desc    Create faculty account (Admin only)
+// @route   POST /api/users/faculty
+// @access  Private/Admin
+export const createFaculty = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+      return res.status(400).json({
+        success: false,
+        message: 'User already exists with this email'
+      });
+    }
+
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role: 'faculty'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Faculty account created successfully',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          isActive: user.isActive,
+          createdAt: user.createdAt
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Create faculty error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// @desc    Set user password (Admin only, faculty accounts)
+// @route   PUT /api/users/:id/password
+// @access  Private/Admin
+export const setUserPassword = async (req, res) => {
+  try {
+    const { password } = req.body;
+    const user = await User.findById(req.params.id).select('+password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.role !== 'faculty') {
+      return res.status(400).json({
+        success: false,
+        message: 'Password can only be reset for faculty accounts'
+      });
+    }
+
+    user.password = password;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Password updated successfully'
+    });
+  } catch (error) {
+    console.error('Set user password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 // @desc    Update user role (Admin only)
 // @route   PUT /api/users/:id/role
 // @access  Private/Admin
@@ -404,7 +547,7 @@ export const deleteUser = async (req, res) => {
 export const updateUserProfile = async (req, res) => {
   try {
     const userId = req.params.id;
-    const { name, phone, college, branch, year, skills, studentId, department, class: studentClass, division } = req.body;
+    const { name, phone, college, branch, year, domain, skills, studentId, department, class: studentClass, division } = req.body;
 
     // Check if user exists
     const user = await User.findById(userId);
@@ -426,7 +569,11 @@ export const updateUserProfile = async (req, res) => {
     if (department !== undefined) updateData['profile.department'] = department;
     if (studentClass !== undefined) updateData['profile.class'] = studentClass;
     if (division !== undefined) updateData['profile.division'] = division;
-    if (skills !== undefined) updateData['profile.skills'] = skills;
+    if (domain !== undefined) {
+      updateData['profile.domain'] = domain;
+    } else if (skills !== undefined) {
+      updateData['profile.domain'] = skills;
+    }
 
     const updatedUser = await User.findByIdAndUpdate(
       userId,

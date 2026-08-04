@@ -1,5 +1,6 @@
 import User from '../models/User.js';
 import { generateToken } from '../utils/generateToken.js';
+import { getCachedLoginResult, setCachedLoginResult } from '../utils/loginCache.js';
 
 // @desc    Register user
 // @route   POST /api/auth/register
@@ -7,9 +8,10 @@ import { generateToken } from '../utils/generateToken.js';
 export const register = async (req, res) => {
   try {
     const { name, email, password } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase().replace(/\+/g, '-');
 
     // Check if user already exists
-    const userExists = await User.findOne({ email });
+    const userExists = await User.findOne({ email: normalizedEmail }).lean();
     if (userExists) {
       return res.status(400).json({
         success: false,
@@ -20,16 +22,13 @@ export const register = async (req, res) => {
     // Create user
     const user = await User.create({
       name,
-      email,
+      email: normalizedEmail,
       password
     });
 
     if (user) {
       // Generate token
-      const token = generateToken(user._id);
-
-      // Update last login
-      await user.updateLastLogin();
+      const token = generateToken(user._id, user);
 
       res.status(201).json({
         success: true,
@@ -70,9 +69,22 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    const rawEmail = String(email || '').trim().toLowerCase();
+    const normalizedEmail = rawEmail.replace(/\+/g, '-');
+    const alternateEmail = rawEmail.replace(/\+/g, '-').replace(/-/g, '+');
+
+    const cachedResult = getCachedLoginResult(normalizedEmail, password) || getCachedLoginResult(alternateEmail, password);
+    if (cachedResult) {
+      return res.status(200).json(cachedResult);
+    }
 
     // Check for user and include password for comparison
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({
+      $or: [
+        { email: normalizedEmail },
+        { email: alternateEmail }
+      ]
+    }).select('+password');
 
     if (!user) {
       return res.status(401).json({
@@ -100,12 +112,8 @@ export const login = async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user._id);
-
-    // Update last login
-    await user.updateLastLogin();
-
-    res.status(200).json({
+    const token = generateToken(user._id, user);
+    const successPayload = {
       success: true,
       message: 'Login successful',
       data: {
@@ -121,7 +129,11 @@ export const login = async (req, res) => {
           lastLogin: user.lastLogin
         }
       }
-    });
+    };
+
+    setCachedLoginResult(normalizedEmail, password, successPayload);
+
+    res.status(200).json(successPayload);
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({

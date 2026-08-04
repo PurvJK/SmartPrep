@@ -64,7 +64,7 @@ const Profile = () => {
           department: response.data.user.profile?.department || '',
           class: response.data.user.profile?.class || '',
           division: response.data.user.profile?.division || '',
-          skills: response.data.user.profile?.skills || []
+          domain: response.data.user.profile?.domain || response.data.user.profile?.skills || []
         });
       }
     } catch (error) {
@@ -92,7 +92,7 @@ const Profile = () => {
       department: user.profile?.department || '',
       class: user.profile?.class || '',
       division: user.profile?.division || '',
-      skills: user.profile?.skills || []
+      domain: user.profile?.domain || user.profile?.skills || []
     });
   };
 
@@ -144,11 +144,11 @@ const Profile = () => {
     }));
   };
 
-  const handleSkillsChange = (value) => {
-    const skills = value.split(',').map(skill => skill.trim()).filter(skill => skill);
+  const handleDomainChange = (value) => {
+    const domain = value.split(',').map(item => item.trim()).filter(item => item);
     setEditForm(prev => ({
       ...prev,
-      skills
+      domain
     }));
   };
 
@@ -296,7 +296,7 @@ const Profile = () => {
                   <div className="space-y-2">
                     <Label htmlFor="role">Account Role</Label>
                     <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
-                      <Badge variant={user.role === 'admin' ? 'destructive' : 'secondary'}>
+                      <Badge variant={user.role === 'admin' ? 'destructive' : user.role === 'faculty' ? 'default' : 'secondary'}>
                         {user.role}
                       </Badge>
                     </div>
@@ -417,32 +417,32 @@ const Profile = () => {
             </Card>
             )}
 
-            {/* Skills Information - For All Users */}
+            {/* Domain Information - For All Users */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center">
                   <Code className="h-5 w-5 mr-2" />
-                  Skills
+                  Domain
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="skills">Your Skills</Label>
+                  <Label htmlFor="domain">Your Domain</Label>
                   {isEditing ? (
                     <Input
-                      id="skills"
-                      value={editForm.skills.join(', ')}
-                      onChange={(e) => handleSkillsChange(e.target.value)}
-                      placeholder="Enter skills separated by commas"
+                      id="domain"
+                      value={editForm.domain.join(', ')}
+                      onChange={(e) => handleDomainChange(e.target.value)}
+                      placeholder="Enter domains separated by commas"
                     />
                   ) : (
                     <div className="flex flex-wrap gap-2 p-3 bg-muted rounded-md">
-                      {user.profile?.skills && user.profile.skills.length > 0 ? (
-                        user.profile.skills.map((skill, index) => (
-                          <Badge key={index} variant="outline">{skill}</Badge>
+                      {(user.profile?.domain || user.profile?.skills || []).length > 0 ? (
+                        (user.profile?.domain || user.profile?.skills || []).map((item, index) => (
+                          <Badge key={index} variant="outline">{item}</Badge>
                         ))
                       ) : (
-                        <span className="text-muted-foreground">No skills added yet</span>
+                        <span className="text-muted-foreground">No domain added yet</span>
                       )}
                     </div>
                   )}
@@ -583,6 +583,21 @@ const Profile = () => {
                       <Button variant="outline" className="w-full justify-start">
                         <Code className="h-4 w-4 mr-2" />
                         Practice Coding
+                      </Button>
+                    </Link>
+                  </>
+                ) : user.role === 'faculty' ? (
+                  <>
+                    <Link to="/admin/quizzes">
+                      <Button variant="outline" className="w-full justify-start">
+                        <Brain className="h-4 w-4 mr-2" />
+                        Manage Quizzes
+                      </Button>
+                    </Link>
+                    <Link to="/admin/competitions">
+                      <Button variant="outline" className="w-full justify-start">
+                        <Trophy className="h-4 w-4 mr-2" />
+                        Manage Competitions
                       </Button>
                     </Link>
                   </>

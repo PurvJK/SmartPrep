@@ -6,13 +6,21 @@ import {
   updateProgress,
   getAllUsers,
   getUserById,
+  createStudent,
+  createFaculty,
+  setUserPassword,
   updateUserRole,
   deactivateUser,
   deleteUser,
   updateUserProfile
 } from '../controllers/userController.js';
 import { protect, authorize } from '../middleware/auth.js';
-import { validateProfileUpdate, validatePasswordChange } from '../middleware/validation.js';
+import {
+  validateProfileUpdate,
+  validatePasswordChange,
+  validateCreateFaculty,
+  validateSetUserPassword
+} from '../middleware/validation.js';
 
 const router = express.Router();
 
@@ -26,8 +34,11 @@ router.put('/change-password', validatePasswordChange, changePassword);
 router.put('/progress', updateProgress);
 
 // Admin routes
+router.post('/student', authorize('admin'), validateCreateFaculty, createStudent);
+router.post('/faculty', authorize('admin'), validateCreateFaculty, createFaculty);
 router.get('/', authorize('admin'), getAllUsers);
 router.get('/:id', authorize('admin'), getUserById);
+router.put('/:id/password', authorize('admin'), validateSetUserPassword, setUserPassword);
 router.put('/:id/role', authorize('admin'), updateUserRole);
 router.put('/:id/profile', authorize('admin'), updateUserProfile);
 router.put('/:id/deactivate', authorize('admin'), deactivateUser);

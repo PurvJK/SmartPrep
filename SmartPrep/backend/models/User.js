@@ -26,7 +26,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['student', 'admin'],
+    enum: ['student', 'admin', 'faculty'],
     default: 'student'
   },
   avatar: {
@@ -74,7 +74,7 @@ const userSchema = new mongoose.Schema({
       type: String,
       default: ''
     },
-    skills: [{
+    domain: [{
       type: String
     }],
     resume: {
@@ -111,10 +111,11 @@ const userSchema = new mongoose.Schema({
 // Hash password before saving
 userSchema.pre('save', async function(next) {
   if (!this.isModified('password')) {
-    next();
+    return next();
   }
-  
-  const salt = await bcrypt.genSalt(10);
+
+  const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || (process.env.NODE_ENV === 'development' ? 2 : 10));
+  const salt = await bcrypt.genSalt(saltRounds);
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });
@@ -124,10 +125,13 @@ userSchema.methods.comparePassword = async function(enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Update last login
+// Update last login without triggering password rehashing
 userSchema.methods.updateLastLogin = function() {
-  this.lastLogin = new Date();
-  return this.save();
+  return this.constructor.findByIdAndUpdate(
+    this._id,
+    { lastLogin: new Date() },
+    { new: true }
+  );
 };
 
 export default mongoose.model('User', userSchema);

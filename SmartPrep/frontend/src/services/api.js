@@ -3,6 +3,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
 class ApiService {
   constructor() {
     this.baseURL = API_BASE_URL;
+    this.cache = new Map();
   }
 
   // Get auth token from localStorage
@@ -29,23 +30,44 @@ class ApiService {
   // Generic request method
   async request(endpoint, options = {}) {
     const url = `${this.baseURL}${endpoint}`;
+    const timeoutMs = options.timeout ?? 20000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const config = {
       headers: this.getHeaders(options.includeAuth !== false),
       ...options,
+      signal: controller.signal,
     };
 
     try {
       const response = await fetch(url, config);
-      const data = await response.json();
+
+      if (response.status === 204 || response.status === 304) {
+        return null;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      const hasJsonBody = contentType.includes('application/json');
+      const data = hasJsonBody ? await response.json() : await response.text();
 
       if (!response.ok) {
-        throw new Error(data.message || `HTTP error! status: ${response.status}`);
+        const validationMsg = data?.errors?.map((e) => e.msg).filter(Boolean).join(', ');
+        throw new Error(validationMsg || data?.message || `HTTP error! status: ${response.status}`);
+      }
+
+      if (!hasJsonBody && data) {
+        return data;
       }
 
       return data;
     } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Request timed out. Please try again.');
+      }
       console.error('API request failed:', error);
       throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -156,7 +178,7 @@ class ApiService {
     const params = new URLSearchParams();
     if (includeUnpublished) params.set('includeUnpublished', includeUnpublished);
     return this.request(`/competitions${params.toString() ? `?${params.toString()}` : ''}`, {
-      includeAuth: includeUnpublished ? true : false
+      includeAuth: true
     });
   }
 
@@ -299,6 +321,22 @@ class ApiService {
     return this.request('/attempts/my');
   }
 
+  async getCandidateResults(quizId) {
+    const query = quizId ? `?quizId=${encodeURIComponent(quizId)}` : '';
+    return this.request(`/attempts/candidates/results${query}`);
+  }
+
+  async getAttemptStats(quizId) {
+    if (!quizId) {
+      throw new Error('quizId is required to fetch attempt stats');
+    }
+    return this.request(`/attempts/stats?quizId=${encodeURIComponent(quizId)}`);
+  }
+
+  async getCompetitionResults(competitionId) {
+    return this.request(`/competitions/${competitionId}/results`);
+  }
+
   // Admin methods
   async getAllUsers(page = 1, limit = 10) {
     return this.request(`/users?page=${page}&limit=${limit}`);
@@ -306,6 +344,27 @@ class ApiService {
 
   async getUserById(userId) {
     return this.request(`/users/${userId}`);
+  }
+
+  async createStudent(studentData) {
+    return this.request('/users/student', {
+      method: 'POST',
+      body: JSON.stringify(studentData),
+    });
+  }
+
+  async createFaculty({ name, email, password }) {
+    return this.request('/users/faculty', {
+      method: 'POST',
+      body: JSON.stringify({ name, email, password }),
+    });
+  }
+
+  async setUserPassword(userId, password) {
+    return this.request(`/users/${userId}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    });
   }
 
   async updateUserRole(userId, role) {

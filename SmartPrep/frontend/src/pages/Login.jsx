@@ -43,7 +43,13 @@ const Login = () => {
           title: "Success",
           description: "Logged in successfully!"
         });
-        navigate(from, { replace: true });
+        const role = result.user?.role;
+        let destination = from;
+        if (from === '/dashboard' || from === '/') {
+          if (role === 'admin') destination = '/admin';
+          else if (role === 'faculty') destination = '/admin/quizzes';
+        }
+        navigate(destination, { replace: true });
       } else {
         toast({
           title: "Error",

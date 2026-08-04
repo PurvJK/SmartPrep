@@ -180,6 +180,7 @@ export const AuthProvider = ({ children }) => {
     updateProgress,
     isAuthenticated: !!user && !!token,
     isAdmin: user?.role === 'admin',
+    isFaculty: user?.role === 'faculty',
     isStudent: user?.role === 'student',
   };
 

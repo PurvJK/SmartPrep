@@ -14,7 +14,8 @@ import {
   User,
   Plus,
   Database,
-  Trophy
+  Trophy,
+  ClipboardList
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -87,6 +88,23 @@ const Navbar = () => {
                   </Link>
                 </>
               )}
+              {/* Faculty Navigation — quizzes & competitions only */}
+              {user.role === 'faculty' && (
+                <>
+                  {[
+                    { to: '/admin/quizzes', label: 'Quizzes', icon: Brain },
+                    { to: '/admin/competitions', label: 'Competitions', icon: Trophy },
+                    { to: '/admin/results', label: 'Results', icon: ClipboardList },
+                  ].map(item => (
+                    <Link key={item.to} to={item.to}>
+                      <Button size="sm" variant={isActive(item.to) ? 'default' : 'ghost'} className="flex items-center space-x-2">
+                        <item.icon className="h-4 w-4" />
+                        <span>{item.label}</span>
+                      </Button>
+                    </Link>
+                  ))}
+                </>
+              )}
               {/* Admin Navigation */}
               {user.role === 'admin' && (
                 <>
@@ -95,6 +113,7 @@ const Navbar = () => {
                     { to: '/admin/content', label: 'Add Content', icon: Plus },
                     { to: '/admin/quizzes', label: 'Quizzes', icon: Brain },
                     { to: '/admin/competitions', label: 'Competitions', icon: Trophy },
+                    { to: '/admin/results', label: 'Results', icon: ClipboardList },
                     { to: '/admin/interviews', label: 'Interview Questions', icon: MessageSquare },
                     { to: '/admin/coding', label: 'Set Code', icon: Code },
                   ].map(item => (
@@ -180,6 +199,30 @@ const Navbar = () => {
                   <Button variant={isActive('/interview-prep') ? 'default' : 'ghost'} className="w-full justify-start">
                     <MessageSquare className="h-4 w-4 mr-2" />
                     Interview Prep
+                  </Button>
+                </Link>
+              </>
+            )}
+
+            {/* Faculty Mobile Navigation */}
+            {user.role === 'faculty' && (
+              <>
+                <Link to="/admin/quizzes" className="block">
+                  <Button variant={isActive('/admin/quizzes') ? 'default' : 'ghost'} className="w-full justify-start">
+                    <Brain className="h-4 w-4 mr-2" />
+                    Quizzes
+                  </Button>
+                </Link>
+                <Link to="/admin/competitions" className="block">
+                  <Button variant={isActive('/admin/competitions') ? 'default' : 'ghost'} className="w-full justify-start">
+                    <Trophy className="h-4 w-4 mr-2" />
+                    Competitions
+                  </Button>
+                </Link>
+                <Link to="/admin/results" className="block">
+                  <Button variant={isActive('/admin/results') ? 'default' : 'ghost'} className="w-full justify-start">
+                    <ClipboardList className="h-4 w-4 mr-2" />
+                    Results
                   </Button>
                 </Link>
               </>

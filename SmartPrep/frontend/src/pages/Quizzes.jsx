@@ -561,52 +561,42 @@ const Quizzes = () => {
       attempt = res.data;
       setAttemptId(attempt._id);
       setSavedAttempt(attempt);
-      // Do not show section score when part of a multi-section competition — show only a generic confirmation.
-      if (!competitionSession || !competitionSession.quizIds || competitionSession.quizIds.length === 0) {
-        toast({ title: 'Section submitted', description: `You scored ${correctAnswers}/${total}` });
-      } else {
-        toast({ title: 'Section submitted', description: 'Your section was submitted' });
-      }
     } catch (err) {
       console.error('Failed to save attempt', err);
       toast({ title: 'Saved failed', description: 'Could not save attempt to server', variant: 'destructive' });
     }
 
-    // If this was part of a competition, record attempt id and either auto-start next or aggregate final results
-    let aggregatedDone = false;
+    // If this was part of a competition, record attempt id and either auto-start next section or finalize the full competition
+    let shouldFinalizeCompetition = false;
     try {
       if (competitionSession && competitionSession.quizIds && competitionSession.quizIds.length) {
         const idx = competitionSession.currentSectionIndex || 0;
-
-        // add attempt id to session attemptIds
         const ids = Array.isArray(competitionSession.attemptIds) ? [...competitionSession.attemptIds] : [];
         if (attempt && attempt._id && !ids.includes(attempt._id)) ids.push(attempt._id);
         const baseSession = { ...competitionSession, attemptIds: ids };
 
-        if (idx < competitionSession.quizIds.length - 1) {
-          // advance to next section and persist
+        const isLastSection = idx >= competitionSession.quizIds.length - 1;
+        if (!isLastSection) {
           const nextIndex = idx + 1;
           const updated = { ...baseSession, currentSectionIndex: nextIndex };
           setCompetitionSession(updated);
+          setShowReview(false);
           try { localStorage.setItem('smartprep-competition-session', JSON.stringify(updated)); } catch (e) {}
 
-          // auto-start next section immediately (small delay so user sees submission feedback)
           const nextQuizId = competitionSession.quizIds[nextIndex];
           const nextQuiz = await resolveQuizForStart(nextQuizId);
           setTimeout(async () => {
             try { localStorage.removeItem(`smartprep-cbt-${nextQuiz._id}`); } catch (e) {}
             setSessionLoaded(false);
             await startQuiz(nextQuiz);
-            // ensure fullscreen remains
             try { if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen(); } catch (e) {}
           }, 900);
           return;
         }
 
-        // Last section: aggregate attempts and prepare combined result
+        shouldFinalizeCompetition = true;
         try {
           const allIds = baseSession.attemptIds || [];
-          // fetch attempts
           const fetched = await Promise.all(allIds.map((id) => api.getAttemptById(id).then((r) => (r.data || r)).catch(() => null)));
           const valid = fetched.filter(Boolean);
           const totalScore = valid.reduce((s, a) => s + (a.score || 0), 0);
@@ -616,13 +606,20 @@ const Quizzes = () => {
           setScore(totalScore);
           if (competitionSession?.competitionId) {
             persistCompletedCompetition(competitionSession.competitionId, combined);
+            try {
+              await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/competitions/${competitionSession.competitionId}/results`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+                body: JSON.stringify({ score: totalScore, totalQuestions, quizAttemptIds: allIds })
+              });
+            } catch (persistErr) {
+              console.warn('Failed to persist competition result', persistErr);
+            }
           }
-          aggregatedDone = true;
         } catch (aggErr) {
           console.warn('Failed to aggregate attempts for competition', aggErr);
         }
 
-        // clear session data
         try { localStorage.removeItem('smartprep-competition-session'); } catch (e) {}
         setCompetitionSession(null);
       }
@@ -630,7 +627,6 @@ const Quizzes = () => {
       console.warn('Failed to advance competition session', e);
     }
 
-    // Finalize full exam UI (either standalone quiz or last competition section)
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
@@ -640,8 +636,7 @@ const Quizzes = () => {
     }
     setIsFullscreen(false);
 
-    // Only set the last-section score for standalone quizzes or when aggregation was not performed.
-    if (!aggregatedDone) {
+    if (!shouldFinalizeCompetition) {
       setScore(correctAnswers);
     }
     setQuizCompleted(true);
@@ -682,6 +677,26 @@ const Quizzes = () => {
     if (competition?._id && completedCompetitions[competition._id]) {
       showCompetitionResults(competition);
       return;
+    }
+
+    if (user?.role === 'student' && competition?.eligibilityMode === 'departmentYearClass') {
+      const matchesDepartment = !competition.eligibleDepartment || (user.profile?.department || '').toLowerCase() === competition.eligibleDepartment.toLowerCase();
+      const matchesYear = !competition.eligibleYear || (user.profile?.year || '').toLowerCase() === competition.eligibleYear.toLowerCase();
+      const matchesClass = !competition.eligibleClass || (user.profile?.class || '').toLowerCase() === competition.eligibleClass.toLowerCase();
+      if (!(matchesDepartment && matchesYear && matchesClass)) {
+        toast({ title: 'Not eligible', description: 'This competition is restricted to a different department, year, or class.', variant: 'destructive' });
+        return;
+      }
+    }
+
+    if (user?.role === 'student' && competition?.eligibilityMode === 'domain') {
+      const userDomains = Array.isArray(user.profile?.domain) ? user.profile.domain : [];
+      const eligibleDomains = Array.isArray(competition.eligibleDomains) ? competition.eligibleDomains : [];
+      const hasDomainMatch = eligibleDomains.some((domain) => userDomains.map((value) => value.toLowerCase()).includes(domain.toLowerCase()));
+      if (!hasDomainMatch) {
+        toast({ title: 'Not eligible', description: 'This competition is restricted to a different domain.', variant: 'destructive' });
+        return;
+      }
     }
 
     try {
@@ -764,18 +779,7 @@ const Quizzes = () => {
       <div className="min-h-screen bg-slate-50">
         <Navbar user={user} onLogout={() => setUser(null)} />
         <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className="mb-8 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-8 shadow-sm sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
-                <Sparkles className="h-4 w-4" /> Practice and live assessments
-              </p>
-              <h1 className="text-3xl font-semibold text-slate-900">Live tests and practice quizzes</h1>
-              <p className="mt-2 text-sm text-slate-600">Ongoing competitions are highlighted so you can see the live window and start tests at the right time. Other quizzes remain available as regular practice.</p>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              <div className="flex items-center gap-2 font-medium text-slate-900"><ShieldAlert className="h-4 w-4" /> Secure assessment flow</div>
-            </div>
-          </div>
+          {/* Hero banner removed per request */}
 
           {loading && <p className="text-slate-600">Loading exams…</p>}
           {error && <p className="text-red-600">{error}</p>}
@@ -1127,21 +1131,23 @@ const Quizzes = () => {
                 <p className="text-sm font-semibold text-slate-900">{selectedQuiz.title}</p>
                 <div className="mt-2 flex items-center gap-2">
                   <Badge className="bg-blue-600 text-white">{sections[currentSectionIndex]?.name || `Section ${currentSectionIndex + 1}`}</Badge>
-                  <div className="-ml-1 flex gap-2 overflow-x-auto py-1">
-                    {sections.map((section, index) => (
-                      <button
-                        key={section.id}
-                        onClick={() => {
-                          const targetQuestion = section.questionIndices[0];
-                          if (targetQuestion !== undefined) jumpToQuestion(targetQuestion);
-                          setCurrentSectionIndex(index);
-                        }}
-                        className={`rounded-full px-3 py-1 text-xs font-medium transition ${currentSectionIndex === index ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
-                      >
-                        {section.name}
-                      </button>
-                    ))}
-                  </div>
+                  {sections.length > 1 && (
+                    <div className="-ml-1 flex gap-2 overflow-x-auto py-1">
+                      {sections.map((section, index) => (
+                        <button
+                          key={section.id}
+                          onClick={() => {
+                            const targetQuestion = section.questionIndices[0];
+                            if (targetQuestion !== undefined) jumpToQuestion(targetQuestion);
+                            setCurrentSectionIndex(index);
+                          }}
+                          className={`rounded-full px-3 py-1 text-xs font-medium transition ${currentSectionIndex === index ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                        >
+                          {section.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1303,7 +1309,7 @@ const Quizzes = () => {
                   <div className="mt-2 flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />Review</div>
                   <div className="mt-2 flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-violet-500" />Answered + Review</div>
                 </div>
-                <div className="grid flex-1 grid-cols-4 gap-2.5 overflow-y-auto">
+                <div className="grid grid-cols-4 gap-2.5 overflow-y-auto">
                   {selectedQuiz.questions.map((_, index) => {
                     const state = getQuestionState(questionStates, index);
                     const isCurrent = index === currentQuestion;

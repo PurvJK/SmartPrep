@@ -1,4 +1,5 @@
 import Quiz from '../models/Quiz.js';
+import { getCachedValue, setCachedValue } from '../utils/quizCache.js';
 
 // @desc    List quizzes (optional filters)
 // @route   GET /api/quizzes
@@ -20,7 +21,17 @@ export const listQuizzes = async (req, res) => {
       filter.isPublished = true;
     }
 
-    const quizzes = await Quiz.find(filter).sort({ createdAt: -1 });
+    const cacheKey = `quizzes:${JSON.stringify(filter)}`;
+    const cached = getCachedValue(cacheKey);
+    if (cached) {
+      return res.status(200).json({
+        success: true,
+        data: cached
+      });
+    }
+
+    const quizzes = await Quiz.find(filter).sort({ createdAt: -1 }).lean();
+    setCachedValue(cacheKey, quizzes);
 
     res.status(200).json({
       success: true,
@@ -41,7 +52,16 @@ export const listQuizzes = async (req, res) => {
 // @access  Public (only published quizzes)
 export const getQuizById = async (req, res) => {
   try {
-    const quiz = await Quiz.findById(req.params.id);
+    const cacheKey = `quiz:${req.params.id}`;
+    const cached = getCachedValue(cacheKey);
+    if (cached) {
+      return res.status(200).json({
+        success: true,
+        data: cached
+      });
+    }
+
+    const quiz = await Quiz.findById(req.params.id).lean();
 
     if (!quiz) {
       return res.status(404).json({
@@ -50,12 +70,14 @@ export const getQuizById = async (req, res) => {
       });
     }
 
-    if (!quiz.isPublished && (!req.user || req.user.role !== 'admin')) {
+    if (!quiz.isPublished && (!req.user || !['admin', 'faculty'].includes(req.user.role))) {
       return res.status(403).json({
         success: false,
         message: 'Quiz is not published'
       });
     }
+
+    setCachedValue(cacheKey, quiz);
 
     res.status(200).json({
       success: true,
@@ -100,7 +122,8 @@ export const createQuiz = async (req, res) => {
         question: question.question,
         options: question.options,
         correctAnswer: question.correctAnswer,
-        explanation: question.explanation || ''
+        explanation: question.explanation || '',
+        topic: question.topic || ''
       };
     });
 
@@ -160,7 +183,8 @@ export const updateQuiz = async (req, res) => {
           question: question.question,
           options: question.options,
           correctAnswer: question.correctAnswer,
-          explanation: question.explanation || ''
+          explanation: question.explanation || '',
+          topic: question.topic || ''
         };
       });
     }

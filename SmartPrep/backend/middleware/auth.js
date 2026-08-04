@@ -1,5 +1,4 @@
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
 
 // Protect routes - verify JWT token
 export const protect = async (req, res, next) => {
@@ -11,18 +10,17 @@ export const protect = async (req, res, next) => {
       // Get token from header
       token = req.headers.authorization.split(' ')[1];
 
-      // Verify token
+      // Verify token and avoid a DB round-trip for every authenticated request
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const userId = decoded.id || decoded._id || decoded.userId;
 
-      // Get user from token
-      req.user = await User.findById(decoded.id).select('-password');
-
-      if (!req.user) {
-        return res.status(401).json({
-          success: false,
-          message: 'Not authorized, user not found'
-        });
-      }
+      req.user = {
+        id: userId?.toString?.() || userId,
+        _id: userId,
+        role: decoded.role || 'student',
+        isActive: decoded.isActive !== false,
+        email: decoded.email || ''
+      };
 
       if (!req.user.isActive) {
         return res.status(401).json({
@@ -70,7 +68,15 @@ export const optionalAuth = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(' ')[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = await User.findById(decoded.id).select('-password');
+      const userId = decoded.id || decoded._id || decoded.userId;
+
+      req.user = {
+        id: userId?.toString?.() || userId,
+        _id: userId,
+        role: decoded.role || 'student',
+        isActive: decoded.isActive !== false,
+        email: decoded.email || ''
+      };
     } catch (error) {
       // Token is invalid, but we don't fail the request
       console.log('Optional auth token invalid:', error.message);

@@ -46,6 +46,34 @@ export const validateLogin = [
   handleValidationErrors
 ];
 
+// Faculty account creation validation (admin only)
+export const validateCreateFaculty = [
+  body('name')
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Name must be between 2 and 50 characters'),
+
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email'),
+
+  body('password')
+    .isLength({ min: 6 })
+    .withMessage('Password must be at least 6 characters long'),
+
+  handleValidationErrors
+];
+
+// Admin-set password (e.g. faculty accounts)
+export const validateSetUserPassword = [
+  body('password')
+    .isLength({ min: 6 })
+    .withMessage('Password must be at least 6 characters long'),
+
+  handleValidationErrors
+];
+
 // Profile update validation
 export const validateProfileUpdate = [
   body('name')
@@ -55,8 +83,8 @@ export const validateProfileUpdate = [
     .withMessage('Name must be between 2 and 50 characters'),
   
   body('phone')
-    .optional()
-    .isMobilePhone()
+    .optional({ values: 'falsy' })
+    .isMobilePhone('any')
     .withMessage('Please provide a valid phone number'),
   
   body('college')
@@ -72,9 +100,9 @@ export const validateProfileUpdate = [
     .withMessage('Branch name cannot exceed 50 characters'),
   
   body('year')
-    .optional()
-    .isIn(['1st', '2nd', '3rd', '4th', '5th'])
-    .withMessage('Year must be one of: 1st, 2nd, 3rd, 4th, 5th'),
+    .optional({ values: 'falsy' })
+    .isIn(['1', '2', '3', '4', '1st', '2nd', '3rd', '4th', '5th'])
+    .withMessage('Year must be a valid academic year'),
   
   handleValidationErrors
 ];
