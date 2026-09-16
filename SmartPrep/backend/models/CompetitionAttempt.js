@@ -23,6 +23,10 @@ const CompetitionAttemptSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'QuizAttempt'
   }],
+  facultyFeedback: {
+    type: String,
+    default: ''
+  },
   submittedAt: {
     type: Date,
     default: Date.now

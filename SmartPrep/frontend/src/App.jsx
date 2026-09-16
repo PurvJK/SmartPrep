@@ -28,6 +28,8 @@ import TreeDataStructure from "./pages/StudyMaterials/DSA/TreeDataStructure";
 import GraphDataStructure from "./pages/StudyMaterials/DSA/GraphDataStructure";
 import TrieDataStructure from "./pages/StudyMaterials/DSA/TrieDataStructure";
 import CompetitionAnalytics from "./pages/CompetitionAnalytics";
+import StudentResults from "./pages/StudentResults";
+import StudentCompetitionDetail from "./pages/StudentCompetitionDetail";
 
 const queryClient = new QueryClient();
 
@@ -116,6 +118,16 @@ const App = () => (
             <Route path="/resume-analyzer" element={
               <ProtectedRoute requireStudent={true}>
                 <ResumeAnalyzer />
+              </ProtectedRoute>
+            } />
+            <Route path="/results" element={
+              <ProtectedRoute requireStudent={true}>
+                <StudentResults />
+              </ProtectedRoute>
+            } />
+            <Route path="/results/:competitionId" element={
+              <ProtectedRoute requireStudent={true}>
+                <StudentCompetitionDetail />
               </ProtectedRoute>
             } />
             <Route path="/profile" element={

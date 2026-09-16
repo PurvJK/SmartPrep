@@ -214,6 +214,12 @@ const AdminPanel = () => {
   const [candidateResults, setCandidateResults] = useState([]);
   const [candidateResultsLoading, setCandidateResultsLoading] = useState(false);
   const [candidateResultsError, setCandidateResultsError] = useState('');
+  const [selectedResult, setSelectedResult] = useState(null);
+  const [resultModalOpen, setResultModalOpen] = useState(false);
+  const [resultLoading, setResultLoading] = useState(false);
+  const [resultAttempt, setResultAttempt] = useState(null);
+  const [resultActiveTab, setResultActiveTab] = useState(1);
+  const [questionReviewIndex, setQuestionReviewIndex] = useState(null);
   const [selectedCompetitionId, setSelectedCompetitionId] = useState('');
   const [competitionSearch, setCompetitionSearch] = useState('');
   const [competitionStats, setCompetitionStats] = useState({});
@@ -340,6 +346,78 @@ const AdminPanel = () => {
       setCandidateResultsLoading(false);
     }
   }, []);
+
+  const openResultDetails = async (result) => {
+    try {
+      console.log('openResultDetails clicked:', result);
+      // allow passing an attempt id string directly
+      let incoming = result;
+      if (typeof result === 'string') {
+        incoming = { _openAttemptId: result, name: 'Student Report' };
+      }
+
+      if (!incoming) {
+        toast({ title: 'Error', description: 'No result provided', variant: 'destructive' });
+        return;
+      }
+
+      // Support different result shapes: quiz candidate result has `attemptId`,
+      // competition result may include `attemptIds` (array) or `quizAttemptIds`.
+      const selectedAttemptId = incoming.attemptId || incoming._openAttemptId || (Array.isArray(incoming.attemptIds) && incoming.attemptIds[0]) || (Array.isArray(incoming.quizAttemptIds) && incoming.quizAttemptIds[0]);
+      if (!selectedAttemptId) {
+        toast({ title: 'Error', description: 'No attempt id available for this result', variant: 'destructive' });
+        return;
+      }
+      setSelectedResult(incoming);
+      // open sheet immediately so user sees loading UI
+      setResultModalOpen(true);
+      setResultLoading(true);
+      setResultAttempt(null);
+      setResultActiveTab(1);
+
+      // fetch the attempt details (populated with quiz and user)
+      console.log('Fetching attempt id:', selectedAttemptId);
+      const res = await api.getAttemptById(selectedAttemptId);
+      const attempt = (res && res.data) ? res.data : res;
+      if (!attempt) {
+        throw new Error('Attempt not found');
+      }
+      console.log('Fetched attempt:', attempt);
+      setResultAttempt(attempt);
+      setQuestionReviewIndex(null);
+    } catch (error) {
+      console.error('openResultDetails error:', error);
+      toast({ title: 'Error', description: error.message || 'Failed to load attempt', variant: 'destructive' });
+      setResultModalOpen(false);
+    } finally {
+      setResultLoading(false);
+    }
+  };
+
+  const closeResultDetails = () => {
+    setResultModalOpen(false);
+    setSelectedResult(null);
+    setResultAttempt(null);
+    setQuestionReviewIndex(null);
+  };
+
+  const computeTopicAnalysis = (attempt) => {
+    if (!attempt || !attempt.quizId || !Array.isArray(attempt.quizId.questions)) return { topics: [], summary: {} };
+    const questions = attempt.quizId.questions;
+    const answers = attempt.answers || [];
+    const topicMap = {};
+    questions.forEach((q, idx) => {
+      const topic = q.topic || 'Uncategorized';
+      if (!topicMap[topic]) topicMap[topic] = { correct: 0, wrong: 0, total: 0 };
+      const ansRecord = answers.find(a => Number(a.questionIndex) === idx) || {};
+      const correct = !!ansRecord.correct;
+      topicMap[topic].total += 1;
+      if (correct) topicMap[topic].correct += 1;
+      else topicMap[topic].wrong += 1;
+    });
+    const topics = Object.keys(topicMap).map((t) => ({ topic: t, ...topicMap[t], accuracy: topicMap[t].total ? Math.round((topicMap[t].correct / topicMap[t].total) * 100) : 0 }));
+    return { topics, summary: topicMap };
+  };
 
   const loadQuizAttemptStats = useCallback(async (quizId) => {
     if (!quizId) {
@@ -737,6 +815,17 @@ const AdminPanel = () => {
     else if (path.includes('/admin')) setActiveTab('users');
   }, [location.pathname]);
 
+  // If navigated here with an `openAttemptId` in location.state, open the result modal
+  useEffect(() => {
+    const openAttemptId = location.state?.openAttemptId;
+    if (openAttemptId) {
+      openResultDetails(openAttemptId);
+      // clear the state so it doesn't reopen on navigation
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
+
   useEffect(() => {
     if (!isFacultyPanel) return;
     const path = location.pathname;
@@ -848,8 +937,19 @@ const AdminPanel = () => {
   const STUDENT_PAGE_SIZE = 8;
 
   const normalizeValue = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
-  const normalizeValueForMatch = (value) => normalizeValue(value).toLowerCase();
-  const studentUsers = (usersList.filter((user) => user.role === 'student') || []);
+  const normalizeValueForMatch = (value) => normalizeValue(value).replace(/\s+/g, '').toLowerCase();
+  const studentUsers = usersList.filter((user) => {
+    const role = String(user.role || '').toLowerCase();
+    const isStudentRole = role === 'student';
+    const hasStudentProfile = Boolean(
+      user.profile?.studentId ||
+      user.profile?.department ||
+      user.profile?.year ||
+      user.profile?.class
+    );
+    return isStudentRole || (!role && hasStudentProfile);
+  });
+
   const competitionEligibleClassOptions = Array.from(
     new Set(
       studentUsers
@@ -868,10 +968,27 @@ const AdminPanel = () => {
       try {
         setUsersLoading(true);
         setUsersError('');
-        const res = await api.getAllUsers(1, 200);
-        // backend returns { success, data: { users, pagination } }
-        const list = res.data?.users || [];
-        setUsersList(list);
+
+        // First request to learn pagination info
+        const first = await api.getAllUsers(1, 200);
+        const firstData = first.data || {};
+        const users = firstData.users || [];
+        const pagination = firstData.pagination || { pages: 1 };
+
+        // If there are additional pages, fetch them in parallel
+        const pages = pagination.pages || 1;
+        if (pages > 1) {
+          const remaining = [];
+          for (let p = 2; p <= pages; p++) remaining.push(api.getAllUsers(p, 200));
+          const fetched = await Promise.allSettled(remaining);
+          fetched.forEach((f) => {
+            if (f.status === 'fulfilled' && f.value?.data?.users) {
+              users.push(...f.value.data.users);
+            }
+          });
+        }
+
+        setUsersList(users);
       } catch (e) {
         setUsersError(e.message || 'Failed to load users');
       } finally {
@@ -1215,6 +1332,12 @@ const AdminPanel = () => {
     );
   };
 
+  const handleQuestionFieldChange = (questionIndex, field, value) => {
+    setQuizQuestions(prev =>
+      prev.map((question, i) => (i === questionIndex ? { ...question, [field]: value } : question))
+    );
+  };
+
   const addQuizQuestion = () => {
     setQuizQuestions(prev => [...prev, createEmptyQuizQuestion()]);
   };
@@ -1320,7 +1443,13 @@ const AdminPanel = () => {
         question: question.question.trim(),
         options: question.options.map(option => option.trim()),
         correctAnswer: question.correctAnswer,
-        explanation: question.explanation.trim()
+        explanation: question.explanation.trim(),
+        subject: (question.subject || '').trim(),
+        topic: (question.topic || '').trim(),
+        marks: question.marks === '' || question.marks === undefined || question.marks === null ? undefined : Number(question.marks),
+        negativeMarks: question.negativeMarks === '' || question.negativeMarks === undefined || question.negativeMarks === null ? undefined : Number(question.negativeMarks),
+        difficulty: question.difficulty || 'Medium',
+        questionType: question.questionType || 'MCQ'
       }));
 
       const tags = quizForm.tags
@@ -1502,8 +1631,30 @@ const AdminPanel = () => {
   };
 
   const refreshUsers = async () => {
-    const res = await api.getAllUsers(1, 200);
-    setUsersList(res.data?.users || []);
+    // reuse fetchUsers logic to refresh full list
+    await (async () => {
+      try {
+        setUsersLoading(true);
+        const first = await api.getAllUsers(1, 200);
+        const users = first.data?.users || [];
+        const pages = first.data?.pagination?.pages || 1;
+        if (pages > 1) {
+          const remaining = [];
+          for (let p = 2; p <= pages; p++) remaining.push(api.getAllUsers(p, 200));
+          const fetched = await Promise.allSettled(remaining);
+          fetched.forEach((f) => {
+            if (f.status === 'fulfilled' && f.value?.data?.users) {
+              users.push(...f.value.data.users);
+            }
+          });
+        }
+        setUsersList(users);
+      } catch (err) {
+        console.error('Failed to refresh users', err);
+      } finally {
+        setUsersLoading(false);
+      }
+    })();
   };
 
   const facultyUsers = (usersList.filter((user) => user.role === 'faculty') || []);
@@ -1514,50 +1665,98 @@ const AdminPanel = () => {
     return [user.name, user.email].some((value) => (value || '').toLowerCase().includes(normalizedSearch));
   });
 
-  const getStudentProfileValue = (student, key) => normalizeValue(student?.profile?.[key] ?? student?.[key] ?? '');
+  const getStudentProfileValue = (student, key, fallback = '') => normalizeValue(student?.profile?.[key] ?? student?.[key] ?? fallback);
 
-  const departmentGroups = studentUsers.reduce((acc, student) => {
-    const department = getStudentProfileValue(student, 'department') || 'Unassigned';
-    const className = getStudentProfileValue(student, 'class') || 'Unassigned';
-    const year = getStudentProfileValue(student, 'year') || 'Unassigned';
-    if (!acc[department]) {
-      acc[department] = { students: [], years: {}, classes: new Set() };
+  // Build department groups using a normalized key to collapse case/spacing variants
+  const normalizedDeptMap = studentUsers.reduce((acc, student) => {
+    const rawDept = getStudentProfileValue(student, 'department', 'Unassigned');
+    const deptKey = normalizeValueForMatch(rawDept) || 'unassigned';
+    const className = getStudentProfileValue(student, 'class', 'Unassigned');
+    const year = getStudentProfileValue(student, 'year', 'Unassigned');
+
+    if (!acc[deptKey]) {
+      acc[deptKey] = { displayName: rawDept || 'Unassigned', students: [], years: {}, classes: new Set() };
     }
-    acc[department].students.push(student);
-    acc[department].classes.add(className);
-    if (!acc[department].years[year]) {
-      acc[department].years[year] = [];
+    acc[deptKey].students.push(student);
+    acc[deptKey].classes.add(className);
+    if (!acc[deptKey].years[year]) {
+      acc[deptKey].years[year] = [];
     }
-    acc[department].years[year].push(student);
+    acc[deptKey].years[year].push(student);
+    return acc;
+  }, {});
+
+  // Create a display-keyed map for UI rendering (preserves human-readable names)
+  const departmentGroups = Object.values(normalizedDeptMap).reduce((acc, group) => {
+    acc[group.displayName] = { students: group.students, years: group.years, classes: group.classes };
     return acc;
   }, {});
 
   const departmentOptions = Object.keys(departmentGroups).sort((a, b) => a.localeCompare(b));
   const filteredDepartmentStudents = selectedDepartment
-    ? studentUsers.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'department')) === normalizeValueForMatch(selectedDepartment))
+    ? studentUsers.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'department', 'Unassigned')) === normalizeValueForMatch(selectedDepartment))
     : studentUsers;
-  const yearOptions = Array.from(new Set(filteredDepartmentStudents.map((student) => getStudentProfileValue(student, 'year') || 'Unassigned'))).sort((a, b) => a.localeCompare(b));
+  const yearOptions = Array.from(new Set(filteredDepartmentStudents.map((student) => getStudentProfileValue(student, 'year', 'Unassigned')))).sort((a, b) => a.localeCompare(b));
   const filteredYearStudents = selectedYear
-    ? filteredDepartmentStudents.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'year')) === normalizeValueForMatch(selectedYear))
+    ? filteredDepartmentStudents.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'year', 'Unassigned')) === normalizeValueForMatch(selectedYear))
     : filteredDepartmentStudents;
-  const classOptions = Array.from(new Set(filteredYearStudents.map((student) => getStudentProfileValue(student, 'class') || 'Unassigned'))).sort((a, b) => a.localeCompare(b));
+  const classOptions = Array.from(new Set(filteredYearStudents.map((student) => getStudentProfileValue(student, 'class', 'Unassigned')))).sort((a, b) => a.localeCompare(b));
   const filteredClassStudents = selectedClass
-    ? filteredYearStudents.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'class')) === normalizeValueForMatch(selectedClass))
+    ? filteredYearStudents.filter((student) => normalizeValueForMatch(getStudentProfileValue(student, 'class', 'Unassigned')) === normalizeValueForMatch(selectedClass))
     : filteredYearStudents;
 
   const visibleStudents = filteredClassStudents.filter((student) => {
-    const matchesSearch = !normalizedSearch || [student.name, student.email, getStudentProfileValue(student, 'studentId')].some((value) => normalizeValueForMatch(value).includes(normalizedSearch));
+    const matchesSearch = !normalizedSearch || [student.name, student.email, getStudentProfileValue(student, 'studentId', '')].some((value) => normalizeValueForMatch(value).includes(normalizedSearch));
     const matchesStatus = studentStatusFilter === 'all' || (studentStatusFilter === 'active' ? student.isActive !== false : student.isActive === false);
     const domainValues = [student.profile?.domain, student.profile?.skills].flat().filter(Boolean);
     const matchesDomain = studentDomainFilter === 'all' || domainValues.some((value) => normalizeValueForMatch(value).includes(normalizeValueForMatch(studentDomainFilter)));
-    const matchesDepartment = !selectedDepartment || normalizeValueForMatch(getStudentProfileValue(student, 'department')) === normalizeValueForMatch(selectedDepartment);
-    const matchesYear = !selectedYear || normalizeValueForMatch(getStudentProfileValue(student, 'year')) === normalizeValueForMatch(selectedYear);
-    const matchesClass = !selectedClass || normalizeValueForMatch(getStudentProfileValue(student, 'class')) === normalizeValueForMatch(selectedClass);
-    return matchesSearch && matchesStatus && matchesDomain && matchesDepartment && matchesYear && matchesClass;
+    return matchesSearch && matchesStatus && matchesDomain;
   });
 
-  const pagedStudents = visibleStudents.slice((studentPage - 1) * STUDENT_PAGE_SIZE, studentPage * STUDENT_PAGE_SIZE);
   const studentPageCount = Math.max(1, Math.ceil(visibleStudents.length / STUDENT_PAGE_SIZE));
+  const pagedStudents = visibleStudents.slice((studentPage - 1) * STUDENT_PAGE_SIZE, studentPage * STUDENT_PAGE_SIZE);
+
+  useEffect(() => {
+    if (studentPage > studentPageCount) {
+      setStudentPage(studentPageCount);
+    }
+  }, [studentPage, studentPageCount]);
+
+  useEffect(() => {
+    if (studentPageCount === 0 && studentPage !== 1) {
+      setStudentPage(1);
+    }
+  }, [studentPageCount, studentPage]);
+
+  // Debug info to help diagnose missing students in UI
+  useEffect(() => {
+    try {
+      // Log summary counts (visible in browser console)
+      // eslint-disable-next-line no-console
+      console.info('[AdminPanel] usersList:', usersList.length, 'studentUsers:', studentUsers.length, 'departmentOptions:', departmentOptions.length, 'selectedDepartment:', selectedDepartment, 'selectedYear:', selectedYear, 'selectedClass:', selectedClass, 'visibleStudents:', visibleStudents.length);
+      // eslint-disable-next-line no-console
+      console.debug('[AdminPanel] filtered counts:', {
+        departmentStudents: filteredDepartmentStudents.length,
+        yearStudents: filteredYearStudents.length,
+        classStudents: filteredClassStudents.length,
+        yearOptions,
+        classOptions,
+        selectedClass,
+        selectedYear,
+        selectedDepartment,
+        normalizedSearch,
+        studentStatusFilter,
+        studentDomainFilter
+      });
+      if (visibleStudents.length === 0 && studentUsers.length > 0) {
+        // Log a few sample student profiles for investigation
+        // eslint-disable-next-line no-console
+        console.debug('[AdminPanel] sample students:', studentUsers.slice(0, 10).map((s) => ({ id: s._id, name: s.name, email: s.email, dept: s.profile?.department, year: s.profile?.year, class: s.profile?.class })));
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, [usersList, studentUsers, departmentOptions, selectedDepartment, selectedYear, selectedClass, visibleStudents, filteredDepartmentStudents, filteredYearStudents, filteredClassStudents, yearOptions, classOptions]);
   const selectedStudents = visibleStudents.filter((student) => selectedStudentIds.includes(student._id));
   const currentPageStudentIds = pagedStudents.map((student) => student._id);
 
@@ -2016,7 +2215,7 @@ const AdminPanel = () => {
                                   <div className="flex items-center justify-between"><span>Classes</span><span>{classes}</span></div>
                                   <div className="flex items-center justify-between"><span>Active</span><span>{deptStudents.filter((student) => student.isActive !== false).length}</span></div>
                                 </div>
-                                <Button className="mt-5 w-full" onClick={() => { setSelectedDepartment(department); setSelectedYear(''); setSelectedClass(''); setStudentPage(1); }}>Open Department</Button>
+                                <Button className="mt-5 w-full" onClick={() => { setSelectedDepartment(normalizeValue(department)); setSelectedYear(''); setSelectedClass(''); setStudentPage(1); setUserSearch(''); setStudentStatusFilter('all'); setStudentDomainFilter('all'); }}>Open Department</Button>
                               </div>
                             );
                           })}
@@ -2042,7 +2241,7 @@ const AdminPanel = () => {
                                     </div>
                                     <Badge variant="outline">{yearStudents.length}</Badge>
                                   </div>
-                                  <Button className="mt-5 w-full" onClick={() => { setSelectedYear(year); setSelectedClass(''); setStudentPage(1); }}>Open Year</Button>
+                                  <Button className="mt-5 w-full" onClick={() => { setSelectedYear(normalizeValue(year)); setSelectedClass(''); setStudentPage(1); setUserSearch(''); setStudentStatusFilter('all'); setStudentDomainFilter('all'); }}>Open Year</Button>
                                 </div>
                               );
                             })}
@@ -2061,7 +2260,7 @@ const AdminPanel = () => {
                           </div>
                           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                             {classOptions.map((className) => {
-                              const classStudents = filteredYearStudents.filter((student) => (student.profile?.class || 'Unassigned') === className);
+                              const classStudents = filteredYearStudents.filter((student) => normalizeValueForMatch(student.profile?.class || 'Unassigned') === normalizeValueForMatch(className));
                               return (
                                 <div key={className} className="rounded-2xl border bg-background p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                                   <div className="flex items-start justify-between gap-3">
@@ -2071,7 +2270,7 @@ const AdminPanel = () => {
                                     </div>
                                     <Badge variant="outline">{classStudents.length}</Badge>
                                   </div>
-                                  <Button className="mt-5 w-full" onClick={() => { setSelectedClass(className); setStudentPage(1); }}>Open Class</Button>
+                                  <Button className="mt-5 w-full" onClick={() => { setSelectedClass(normalizeValue(className)); setStudentPage(1); setUserSearch(''); setStudentStatusFilter('all'); setStudentDomainFilter('all'); }}>Open Class</Button>
                                 </div>
                               );
                             })}
@@ -2137,8 +2336,7 @@ const AdminPanel = () => {
                                       <tr>
                                         <th className="px-3 py-3 text-left">
                                           <Checkbox
-                                            checked={isAllCurrentPageSelected}
-                                            indeterminate={isSomeCurrentPageSelected && !isAllCurrentPageSelected}
+                                            checked={isAllCurrentPageSelected ? true : isSomeCurrentPageSelected ? 'indeterminate' : false}
                                             onCheckedChange={(checked) => {
                                               if (checked) {
                                                 setSelectedStudentIds((prev) => Array.from(new Set([...prev, ...currentPageStudentIds])));
@@ -2172,7 +2370,7 @@ const AdminPanel = () => {
                                           <td className="px-3 py-3"><Button variant="ghost" size="icon" onClick={() => openStudentDetails(student)}><Eye className="h-4 w-4" /></Button></td>
                                           <td className="px-3 py-3">
                                             <div>
-                                              <p className="font-medium">{student.name}</p>
+                                              <p className="font-medium">{student.name || student.email || student.profile?.studentId || 'Unknown Student'}</p>
                                               <p className="text-xs text-muted-foreground">{student.profile?.division || '—'}</p>
                                             </div>
                                           </td>
@@ -2182,7 +2380,7 @@ const AdminPanel = () => {
                                           <td className="px-3 py-3"><Badge variant={student.isActive === false ? 'destructive' : 'secondary'}>{student.isActive === false ? 'Inactive' : 'Active'}</Badge></td>
                                           <td className="px-3 py-3">
                                             <div className="flex flex-wrap gap-2">
-                                              <Button size="sm" variant="outline" onClick={() => openStudentDetails(student)}><Eye className="h-3 w-3 mr-1" /> View</Button>
+                                              <Button size="sm" variant="outline" onClick={() => openStudentDetails(student)}>View</Button>
                                               <Button size="sm" variant="outline" onClick={() => { setEditingUser(student); setEditingUserForm({ name: student.name, phone: student.profile?.phone || '', college: student.profile?.college || '', branch: student.profile?.branch || '', year: student.profile?.year || '', studentId: student.profile?.studentId || '', department: student.profile?.department || '', class: student.profile?.class || '', division: student.profile?.division || '', domain: student.profile?.domain?.join(', ') || student.profile?.skills?.join(', ') || '', password: '' }); }}><Edit className="h-3 w-3 mr-1" /> Edit</Button>
                                               <Button size="sm" variant="destructive" onClick={async () => { if (!confirm(`Delete ${student.name}?`)) return; try { await api.deleteUser(student._id); toast({ title: 'Deleted', description: 'Student removed.' }); await refreshUsers(); } catch (e) { toast({ title: 'Error', description: e.message || 'Failed to delete student', variant: 'destructive' }); } }}><Trash2 className="h-3 w-3" /></Button>
                                             </div>
@@ -2681,7 +2879,7 @@ const AdminPanel = () => {
               </div>
             </CardHeader>
             <CardContent className="space-y-6 px-0 pb-0">
-              <div className="grid gap-4 xl:grid-cols-3 lg:grid-cols-2">
+              <div className="grid gap-4 xl:grid-cols-3 lg:grid-cols-2 mt-6">
                 {competitions.filter((competition) => {
                   const query = competitionSearch.trim().toLowerCase();
                   if (!query) return true;
@@ -2803,184 +3001,7 @@ const AdminPanel = () => {
                 </div>
               </div>
 
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                    <div className="space-y-1">
-                      <div className="text-sm font-semibold text-slate-900">Dashboard Summary</div>
-                      <div className="text-sm text-slate-600">
-                        <span className="font-medium text-slate-800">Competition:</span> {competitionTitle}
-                      </div>
-                      <div className="text-sm text-slate-600">
-                        <span className="font-medium text-slate-800">Quiz:</span> {selectedQuizTitle}
-                      </div>
-                    </div>
-                    <div className="w-full max-w-xs space-y-2">
-                      <Label htmlFor="quiz-stat-select">Select quiz for dashboard</Label>
-                      <Select
-                        value={selectedQuizIdForStats}
-                        onValueChange={(value) => {
-                          setSelectedQuizIdForStats(value);
-                          loadQuizAttemptStats(value);
-                        }}
-                      >
-                        <SelectTrigger id="quiz-stat-select">
-                          <SelectValue placeholder="Select a quiz" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {quizzesList.map((quiz) => (
-                            <SelectItem key={quiz._id} value={quiz._id}>{quiz.title}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
-
-                {quizAttemptStatsLoading || quizResultsLoading ? (
-                  <p className="text-sm text-muted-foreground">Loading quiz dashboard...</p>
-                ) : quizAttemptStatsError ? (
-                  <p className="text-sm text-red-600">{quizAttemptStatsError}</p>
-                ) : quizAttemptStats ? (
-                  <div className="space-y-4">
-                    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700 p-5 text-white shadow-sm">
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
-                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Students Attempted</div>
-                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.uniqueStudents}</div>
-                        </div>
-                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
-                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Average Score</div>
-                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.averageScore ?? 0}%</div>
-                        </div>
-                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
-                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Highest</div>
-                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.highestScore ?? 0}%</div>
-                        </div>
-                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
-                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Lowest</div>
-                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.lowestScore ?? 0}%</div>
-                        </div>
-                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
-                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Pass Rate</div>
-                          <div className="mt-2 text-2xl font-semibold">{quizAttemptStats.passRate ?? 0}%</div>
-                        </div>
-                        <div className="rounded-xl border border-white/10 bg-white/10 p-3">
-                          <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Avg Time</div>
-                          <div className="mt-2 text-2xl font-semibold">{formatDurationMinutes(quizAttemptStats.averageTimeMinutes * 60)}</div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm font-semibold text-slate-900">Score Distribution</div>
-                            <div className="text-sm text-slate-500">A quick view of how challenging this quiz felt.</div>
-                          </div>
-                        </div>
-                        <div className="mt-4 h-72">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={scoreDistributionData}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                              <XAxis dataKey="label" tickLine={false} axisLine={false} />
-                              <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
-                              <Tooltip />
-                              <Bar dataKey="count" fill="#2563eb" radius={[6, 6, 0, 0]} />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                          <div className="text-sm font-semibold text-slate-900">Quiz Statistics</div>
-                          <div className="mt-3 space-y-3 text-sm text-slate-600">
-                            <div className="rounded-xl bg-slate-50 p-3">
-                              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Attempts</div>
-                              <div className="mt-1 text-lg font-semibold text-slate-900">{quizAttemptStats.totalAttempts}</div>
-                            </div>
-                            <div className="rounded-xl bg-slate-50 p-3">
-                              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Unique students</div>
-                              <div className="mt-1 text-lg font-semibold text-slate-900">{quizAttemptStats.uniqueStudents}</div>
-                            </div>
-                            <div className="rounded-xl bg-slate-50 p-3">
-                              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Average time</div>
-                              <div className="mt-1 text-lg font-semibold text-slate-900">{formatDurationMinutes(quizAttemptStats.averageTimeMinutes)}</div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                          <div className="text-sm font-semibold text-slate-900">Question Analysis</div>
-                          <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
-                            Use the attempt data to spot the questions that consistently pull the class average down.
-                          </div>
-                        </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                          <div className="text-sm font-semibold text-slate-900">Topic Analysis</div>
-                          <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
-                            Review topic-level performance trends and identify the topics that need more revision.
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-slate-900">Student Performance Table</div>
-                          <div className="text-sm text-slate-500">Ranked by score, accuracy, and response time.</div>
-                        </div>
-                        <Badge variant="outline" className="w-fit">{rankedQuizResults.length} attempts</Badge>
-                      </div>
-                      <div className="mt-4 overflow-x-auto">
-                        <table className="min-w-full border-collapse text-sm">
-                          <thead>
-                            <tr className="border-b bg-slate-50 text-left">
-                              <th className="px-3 py-2">Rank</th>
-                              <th className="px-3 py-2">Student</th>
-                              <th className="px-3 py-2">Score</th>
-                              <th className="px-3 py-2">Accuracy</th>
-                              <th className="px-3 py-2">Time</th>
-                              <th className="px-3 py-2">Status</th>
-                              <th className="px-3 py-2">Report</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rankedQuizResults.map((result) => {
-                              const status = getPerformanceStatus(result.percentage ?? 0);
-                              return (
-                                <tr key={`${result.attemptId || result.studentId}-${result.name}`} className="border-b">
-                                  <td className="px-3 py-2 font-semibold text-slate-700">{result.rank}</td>
-                                  <td className="px-3 py-2">{result.name || '—'}</td>
-                                  <td className="px-3 py-2">{result.marks ?? 0}/{result.totalMarks ?? 0}</td>
-                                  <td className="px-3 py-2">{result.percentage ?? 0}%</td>
-                                  <td className="px-3 py-2">{formatDurationMinutes(result.timeTaken ?? 0)}</td>
-                                  <td className="px-3 py-2">
-                                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.tone}`}>
-                                      {status.label}
-                                    </span>
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    <Button variant="outline" size="sm">
-                                      <Eye className="mr-2 h-4 w-4" /> View
-                                    </Button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Select a quiz to see the dashboard summary.</p>
-                )}
-              </div>
-              {candidateResultsLoading && <p className="text-sm text-muted-foreground">Loading competition results...</p>}
-              {candidateResultsError && <p className="text-sm text-red-600">{candidateResultsError}</p>}
+              {/* analytics/dashboard removed — only competition cards are shown per admin preference */}
             </CardContent>
           </Card>
         )}
@@ -4339,6 +4360,78 @@ const AdminPanel = () => {
                                     onChange={(e) => handleExplanationChange(index, e.target.value)}
                                     rows={2}
                                   />
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                  <Label>Subject</Label>
+                                  <Input
+                                    placeholder="e.g., DSA"
+                                    value={question.subject || ''}
+                                    onChange={(e) => handleQuestionFieldChange(index, 'subject', e.target.value)}
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Topic</Label>
+                                  <Input
+                                    placeholder="e.g., Stack"
+                                    value={question.topic || ''}
+                                    onChange={(e) => handleQuestionFieldChange(index, 'topic', e.target.value)}
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Marks</Label>
+                                  <Input
+                                    type="number"
+                                    placeholder="e.g., 1"
+                                    value={question.marks !== undefined && question.marks !== null ? question.marks : ''}
+                                    onChange={(e) => handleQuestionFieldChange(index, 'marks', e.target.value)}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                  <Label>Negative Marks</Label>
+                                  <Input
+                                    type="number"
+                                    placeholder="e.g., 0.25"
+                                    value={question.negativeMarks !== undefined && question.negativeMarks !== null ? question.negativeMarks : ''}
+                                    onChange={(e) => handleQuestionFieldChange(index, 'negativeMarks', e.target.value)}
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Difficulty</Label>
+                                  <Select
+                                    value={question.difficulty || 'Medium'}
+                                    onValueChange={(value) => handleQuestionFieldChange(index, 'difficulty', value)}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="Easy">Easy</SelectItem>
+                                      <SelectItem value="Medium">Medium</SelectItem>
+                                      <SelectItem value="Hard">Hard</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div>
+                                  <Label>Question Type</Label>
+                                  <Select
+                                    value={question.questionType || 'MCQ'}
+                                    onValueChange={(value) => handleQuestionFieldChange(index, 'questionType', value)}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="MCQ">MCQ</SelectItem>
+                                      <SelectItem value="Short">Short</SelectItem>
+                                      <SelectItem value="Long">Long</SelectItem>
+                                    </SelectContent>
+                                  </Select>
                                 </div>
                               </div>
                             </CardContent>

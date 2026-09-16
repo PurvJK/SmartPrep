@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { format } from 'date-fns';
 import Navbar from '@/components/Layout/Navbar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -98,6 +99,8 @@ const Quizzes = () => {
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [score, setScore] = useState(0);
   const [showResults, setShowResults] = useState(false);
+  const [competitionResultPending, setCompetitionResultPending] = useState(false);
+  const [pendingCompetition, setPendingCompetition] = useState(null);
   const [showReview, setShowReview] = useState(false);
   const [attemptId, setAttemptId] = useState(null);
   const [savedAttempt, setSavedAttempt] = useState(null);
@@ -405,6 +408,8 @@ const Quizzes = () => {
     setTimeLimit(0);
     setQuizCompleted(false);
     setShowResults(false);
+    setCompetitionResultPending(false);
+    setPendingCompetition(null);
     setShowReview(false);
     setWarningCount(0);
     setScore(0);
@@ -424,9 +429,36 @@ const Quizzes = () => {
     });
   };
 
+  const isCompetitionResultAvailable = (competition) => {
+    if (!competition?.endDate) return true;
+    const end = new Date(competition.endDate).getTime();
+    return Number.isFinite(end) ? Date.now() >= end : true;
+  };
+
   const showCompetitionResults = (competition) => {
     const result = competition?._id ? completedCompetitions[competition._id] : null;
     if (!result) return;
+
+    const isAvailable = isCompetitionResultAvailable(competition);
+    if (!isAvailable) {
+      setSelectedQuiz({ _id: competition._id, title: competition.title, questions: [] });
+      setSavedAttempt(null);
+      setScore(result.score || 0);
+      setQuizCompleted(true);
+      setCompetitionResultPending(true);
+      setPendingCompetition(competition);
+      setShowResults(true);
+      setShowReview(false);
+      setSessionLoaded(true);
+      setCompetitionSession(null);
+      setIsFullscreen(false);
+      try {
+        localStorage.removeItem('smartprep-competition-session');
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
 
     const firstRelatedQuiz = Array.isArray(competition?.relatedQuizzes) ? competition.relatedQuizzes.find((quiz) => quiz && typeof quiz === 'object') : null;
     setSelectedQuiz(firstRelatedQuiz || { _id: competition._id, title: competition.title, questions: [] });
@@ -434,6 +466,7 @@ const Quizzes = () => {
     setSavedAttempt(result);
     setScore(result.score || 0);
     setQuizCompleted(true);
+    setCompetitionResultPending(false);
     setShowResults(true);
     setShowReview(false);
     setSessionLoaded(true);
@@ -465,6 +498,8 @@ const Quizzes = () => {
       });
       return;
     }
+    setCompetitionResultPending(false);
+    setPendingCompetition(null);
 
     const initialAnswers = Array(quizToStart.questions.length).fill(null);
     const initialStates = getInitialQuestionStates(quizToStart.questions.length);
@@ -477,6 +512,7 @@ const Quizzes = () => {
     setTimeLimit(quizToStart.timeLimit || quizToStart.questions.length * 60 || 600);
     setQuizCompleted(false);
     setShowResults(false);
+    setCompetitionResultPending(false);
     setShowReview(false);
     setWarningCount(0);
     setScore(0);
@@ -604,6 +640,14 @@ const Quizzes = () => {
           const combined = { attempts: valid, score: totalScore, totalQuestions, submittedAt: new Date().toISOString() };
           setSavedAttempt(combined);
           setScore(totalScore);
+
+          const competition = competitions.find((c) => c._id === competitionSession.competitionId);
+          const isAvailable = competition ? isCompetitionResultAvailable(competition) : false;
+          setCompetitionResultPending(!isAvailable);
+          if (competition && !isAvailable) {
+            setPendingCompetition(competition);
+          }
+
           if (competitionSession?.competitionId) {
             persistCompletedCompetition(competitionSession.competitionId, combined);
             try {
@@ -939,11 +983,64 @@ const Quizzes = () => {
   
 
   if (showResults) {
+    if (competitionResultPending) {
+      const pendingEndDate = pendingCompetition?.endDate || currentCompetition?.endDate;
+      return (
+        <div className="min-h-screen bg-slate-50">
+          <Navbar user={user} onLogout={() => setUser(null)} />
+          <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6 lg:px-8">
+            <div className="rounded-3xl border border-slate-200 bg-white p-10 shadow-sm text-center">
+              <div className="mb-6 inline-flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+                <Clock className="h-8 w-8" />
+              </div>
+              <h1 className="text-2xl font-bold text-slate-900">Competition results are pending</h1>
+              <p className="mt-4 text-sm leading-6 text-slate-600">
+                Your competition submission has been recorded. Results will be available once the competition window ends.
+              </p>
+              <div className="mt-6 text-sm text-slate-500">
+                <p>Competition ends on:</p>
+                <p className="font-semibold text-slate-900">{pendingEndDate ? format(new Date(pendingEndDate), 'dd MMM yyyy, hh:mm a') : 'Not available'}</p>
+              </div>
+              <div className="mt-8 flex justify-center gap-3">
+                <Button variant="outline" onClick={resetQuiz}>
+                  <ArrowLeft className="mr-2 h-4 w-4" /> Back to exams
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const safeSelectedQuizQuestions = Array.isArray(selectedQuiz?.questions) ? selectedQuiz.questions : [];
     const isCompetitionResult = savedAttempt?.attempts && Array.isArray(savedAttempt.attempts);
-    const resultTotalQuestions = savedAttempt?.totalQuestions || selectedQuiz.questions.length;
+    const resultTotalQuestions = savedAttempt?.totalQuestions ?? safeSelectedQuizQuestions.length;
     const resultAttempted = isCompetitionResult
       ? savedAttempt.attempts.reduce((sum, attempt) => sum + (attempt.answers?.filter((a) => a.selected !== null && a.selected !== undefined && a.selected !== '').length || 0), 0)
       : answeredCount;
+
+    const reviewQuestions = isCompetitionResult
+      ? []
+      : safeSelectedQuizQuestions;
+
+    if (!savedAttempt && !reviewQuestions.length && !isCompetitionResult) {
+      return (
+        <div className="min-h-screen bg-slate-50">
+          <Navbar user={user} onLogout={() => setUser(null)} />
+          <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6 lg:px-8">
+            <div className="rounded-3xl border border-slate-200 bg-white p-10 shadow-sm text-center">
+              <p className="text-lg font-semibold text-slate-900">Result not available yet.</p>
+              <p className="mt-4 text-sm text-slate-600">We are still processing your competition submission. Please return to the dashboard or refresh after the competition ends.</p>
+              <div className="mt-8 flex justify-center gap-3">
+                <Button variant="outline" onClick={resetQuiz}>
+                  <ArrowLeft className="mr-2 h-4 w-4" /> Back to exams
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div className="min-h-screen bg-slate-50">
@@ -1033,7 +1130,7 @@ const Quizzes = () => {
                 </div>
               ) : (
                 <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                  {selectedQuiz.questions.map((question, index) => (
+                  {reviewQuestions.map((question, index) => (
                     <Card key={`${question._id || index}`} className="border-slate-200">
                       <CardContent className="p-4">
                         <div className="flex items-start gap-3">

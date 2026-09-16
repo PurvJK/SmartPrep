@@ -321,6 +321,14 @@ class ApiService {
     return this.request('/attempts/my');
   }
 
+  async getMyCompetitionResults() {
+    return this.request('/competitions/my/results');
+  }
+
+  async getMyCompetitionResultById(competitionId) {
+    return this.request(`/competitions/my/results/${competitionId}`);
+  }
+
   async getCandidateResults(quizId) {
     const query = quizId ? `?quizId=${encodeURIComponent(quizId)}` : '';
     return this.request(`/attempts/candidates/results${query}`);

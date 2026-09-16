@@ -145,7 +145,9 @@ export const getCompetitionResults = async (req, res) => {
         marks: entry.score ?? 0,
         totalMarks: entry.totalQuestions || 0,
         percentage: entry.totalQuestions > 0 ? Math.round(((entry.score ?? 0) / entry.totalQuestions) * 100) : 0,
-        submittedAt: entry.submittedAt
+        submittedAt: entry.submittedAt,
+        // include any stored quiz attempt ids for this competition attempt
+        attemptIds: Array.isArray(entry.quizAttemptIds) ? entry.quizAttemptIds.map(String) : []
       });
     });
 
@@ -165,6 +167,14 @@ export const getCompetitionResults = async (req, res) => {
       existing.marks += attempt.score ?? 0;
       existing.totalMarks += attempt.totalQuestions || 0;
       existing.percentage = existing.totalMarks > 0 ? Math.round((existing.marks / existing.totalMarks) * 100) : 0;
+      // add the quiz attempt id to the list so frontend can fetch detailed attempt(s)
+      if (!existing.attemptIds) existing.attemptIds = [];
+      try {
+        const idStr = attempt._id?.toString();
+        if (idStr && !existing.attemptIds.includes(idStr)) existing.attemptIds.push(idStr);
+      } catch (err) {
+        // ignore
+      }
       studentResults.set(userId, existing);
     });
 
@@ -180,6 +190,231 @@ export const getCompetitionResults = async (req, res) => {
 // @desc    Save a completed competition result
 // @route   POST /api/competitions/:id/results
 // @access  Private
+export const getMyCompetitionResults = async (req, res) => {
+  try {
+    const attempts = await CompetitionAttempt.find({ userId: req.user.id })
+      .populate('competitionId', 'title startDate endDate')
+      .sort({ submittedAt: -1 });
+
+    const now = new Date();
+    const results = attempts.map((attempt) => {
+      const competitionEndDate = attempt.competitionId?.endDate;
+      const resultAvailable = competitionEndDate ? now >= new Date(competitionEndDate) : true;
+      const totalQuestions = resultAvailable ? attempt.totalQuestions ?? 0 : null;
+      const score = resultAvailable ? attempt.score ?? 0 : null;
+      const percentage = resultAvailable && totalQuestions
+        ? Math.round((score / totalQuestions) * 100)
+        : null;
+
+      return {
+        competitionId: attempt.competitionId?._id,
+        competitionTitle: attempt.competitionId?.title || 'Unknown competition',
+        startDate: attempt.competitionId?.startDate,
+        endDate: attempt.competitionId?.endDate,
+        score,
+        totalQuestions,
+        percentage,
+        resultAvailable,
+        submittedAt: attempt.submittedAt
+      };
+    });
+
+    res.status(200).json({ success: true, data: results });
+  } catch (error) {
+    console.error('Get my competition results error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch competition results for user' });
+  }
+};
+
+export const getMyCompetitionResultById = async (req, res) => {
+  try {
+    const competitionId = req.params.competitionId;
+    const userId = req.user.id;
+
+    const competitionAttempt = await CompetitionAttempt.findOne({ competitionId, userId })
+      .populate('competitionId', 'title description startDate endDate')
+      .lean();
+
+    if (!competitionAttempt) {
+      return res.status(404).json({ success: false, message: 'Competition result not found' });
+    }
+
+    const competition = competitionAttempt.competitionId;
+    const now = new Date();
+    const competitionEndDate = competition?.endDate ? new Date(competition.endDate) : null;
+    const resultAvailable = !competitionEndDate || now >= competitionEndDate;
+
+    if (!resultAvailable) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          competitionId: competition?._id,
+          competitionTitle: competition?.title || 'Competition',
+          description: competition?.description || '',
+          startDate: competition?.startDate,
+          endDate: competition?.endDate,
+          submittedAt: competitionAttempt.submittedAt,
+          resultAvailable: false
+        }
+      });
+    }
+
+    const [quizAttempts, allAttempts] = await Promise.all([
+      QuizAttempt.find({ _id: { $in: competitionAttempt.quizAttemptIds } })
+        .populate('quizId')
+        .lean(),
+      CompetitionAttempt.find({ competitionId }).lean()
+    ]);
+
+    const attemptPercentages = allAttempts.map((att) => {
+      const total = att.totalQuestions || 0;
+      return total > 0 ? Math.round(((att.score ?? 0) / total) * 100) : 0;
+    });
+    const sortedPercentages = [...attemptPercentages].sort((a, b) => b - a);
+    const userPercentage = competitionAttempt.totalQuestions
+      ? Math.round(((competitionAttempt.score ?? 0) / competitionAttempt.totalQuestions) * 100)
+      : 0;
+    const rank = sortedPercentages.findIndex((value) => value === userPercentage) + 1;
+    const totalParticipants = sortedPercentages.length;
+    const classAverage = totalParticipants > 0
+      ? Math.round(sortedPercentages.reduce((sum, value) => sum + value, 0) / totalParticipants)
+      : 0;
+    const highestScore = totalParticipants > 0 ? sortedPercentages[0] : 0;
+    const percentile = totalParticipants > 1
+      ? Number((((totalParticipants - rank) / (totalParticipants - 1)) * 100).toFixed(2))
+      : 100;
+
+    const allCompetitionAttempts = await CompetitionAttempt.find({ userId }).populate('competitionId', 'title').sort({ submittedAt: -1 }).lean();
+    const previousCompetitions = allCompetitionAttempts
+      .filter((att) => String(att.competitionId?._id) !== String(competitionId))
+      .slice(0, 5)
+      .map((att) => ({
+        competitionId: att.competitionId?._id,
+        competitionTitle: att.competitionId?.title || 'Unknown competition',
+        percentage: att.totalQuestions ? Math.round(((att.score ?? 0) / att.totalQuestions) * 100) : 0,
+        submittedAt: att.submittedAt
+      }));
+
+    const questionReview = [];
+    const topicMap = {};
+    let totalCorrect = 0;
+    let totalWrong = 0;
+    let totalSkipped = 0;
+    let answeredCount = 0;
+
+    quizAttempts.forEach((quizAttempt) => {
+      const quiz = quizAttempt.quizId;
+      const answers = quizAttempt.answers || [];
+      const questionCount = quiz?.questions?.length || 0;
+
+      for (let idx = 0; idx < questionCount; idx += 1) {
+        const question = quiz.questions[idx];
+        const answer = answers.find((ans) => Number(ans.questionIndex) === idx);
+        const selected = answer?.selected;
+        const correct = !!answer?.correct;
+        const skipped = answer === undefined || selected === undefined || selected === null;
+        if (skipped) {
+          totalSkipped += 1;
+        } else if (correct) {
+          totalCorrect += 1;
+          answeredCount += 1;
+        } else {
+          totalWrong += 1;
+          answeredCount += 1;
+        }
+
+        const topic = question.topic || 'General';
+        if (!topicMap[topic]) {
+          topicMap[topic] = { topic, total: 0, correct: 0, wrong: 0, skipped: 0 };
+        }
+        topicMap[topic].total += 1;
+        if (skipped) topicMap[topic].skipped += 1;
+        else if (correct) topicMap[topic].correct += 1;
+        else topicMap[topic].wrong += 1;
+
+        questionReview.push({
+          quizTitle: quiz.title || 'Quiz',
+          questionIndex: idx,
+          question: question.question,
+          options: question.options || [],
+          selected,
+          correctAnswer: question.correctAnswer,
+          correct,
+          skipped,
+          explanation: question.explanation || '',
+          topic,
+          quizId: quiz._id
+        });
+      }
+    });
+
+    const topicPerformance = Object.values(topicMap).map((topicData) => {
+      const correct = topicData.correct;
+      const accuracy = topicData.total > 0 ? Math.round((correct / topicData.total) * 100) : 0;
+      let status = 'Average';
+      if (accuracy >= 80) status = 'Excellent';
+      else if (accuracy >= 60) status = 'Good';
+      else if (accuracy >= 40) status = 'Average';
+      else status = 'Needs Improvement';
+      return {
+        ...topicData,
+        accuracy,
+        status
+      };
+    }).sort((a, b) => b.accuracy - a.accuracy);
+
+    const strengths = topicPerformance.filter((topic) => topic.accuracy >= 70).map((topic) => topic.topic);
+    const weaknesses = topicPerformance.filter((topic) => topic.accuracy < 70).map((topic) => topic.topic);
+    const recommendations = weaknesses.slice(0, 3).map((topic) => ({
+      title: `Master ${topic}`,
+      description: `Review theory and practice questions for ${topic}.`,
+      links: [
+        { label: 'Read Theory', href: '/study-materials' },
+        { label: 'Practice Quiz', href: '/quizzes' },
+        { label: 'Interview Questions', href: '/interview-prep' }
+      ]
+    }));
+
+    const detail = {
+      competitionId: competitionAttempt.competitionId?._id,
+      competitionTitle: competitionAttempt.competitionId?.title || 'Competition',
+      description: competitionAttempt.competitionId?.description || '',
+      startDate: competitionAttempt.competitionId?.startDate,
+      endDate: competitionAttempt.competitionId?.endDate,
+      score: competitionAttempt.score ?? 0,
+      totalQuestions: competitionAttempt.totalQuestions ?? 0,
+      percentage: userPercentage,
+      rank,
+      percentile,
+      classAverage,
+      highestScore,
+      timeTakenSeconds: quizAttempts.reduce((sum, attempt) => sum + (attempt.timeTaken || 0), 0),
+      submittedAt: competitionAttempt.submittedAt,
+      quizAttempts: quizAttempts.map((attempt) => ({
+        _id: attempt._id,
+        quizTitle: attempt.quizId?.title || 'Quiz',
+        score: attempt.score ?? 0,
+        totalQuestions: attempt.totalQuestions ?? 0,
+        percentage: attempt.totalQuestions ? Math.round(((attempt.score ?? 0) / attempt.totalQuestions) * 100) : 0,
+        timeTaken: attempt.timeTaken,
+        submittedAt: attempt.submittedAt
+      })),
+      questionReview,
+      topicPerformance,
+      strengths,
+      weaknesses,
+      recommendations,
+      previousCompetitions,
+      facultyFeedback: competitionAttempt.facultyFeedback || ''
+    };
+
+    res.status(200).json({ success: true, data: detail });
+  } catch (error) {
+    console.error('Get my competition detail error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch competition result detail' });
+  }
+};
+
 export const saveCompetitionResult = async (req, res) => {
   try {
     const competition = await Competition.findById(req.params.id);

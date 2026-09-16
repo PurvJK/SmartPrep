@@ -74,6 +74,12 @@ const Navbar = () => {
                       <span>Quizzes</span>
                     </Button>
                   </Link>
+                  <Link to="/results">
+                    <Button size="sm" variant={isActive('/results') ? 'default' : 'ghost'} className="flex items-center space-x-2">
+                      <Trophy className="h-4 w-4" />
+                      <span>Results</span>
+                    </Button>
+                  </Link>
                   <Link to="/coding-practice">
                     <Button size="sm" variant={isActive('/coding-practice') ? 'default' : 'ghost'} className="flex items-center space-x-2">
                       <Code className="h-4 w-4" />
@@ -187,6 +193,12 @@ const Navbar = () => {
                   <Button variant={isActive('/quizzes') ? 'default' : 'ghost'} className="w-full justify-start">
                     <Brain className="h-4 w-4 mr-2" />
                     Quizzes
+                  </Button>
+                </Link>
+                <Link to="/results" className="block">
+                  <Button variant={isActive('/results') ? 'default' : 'ghost'} className="w-full justify-start">
+                    <Trophy className="h-4 w-4 mr-2" />
+                    Results
                   </Button>
                 </Link>
                 <Link to="/coding-practice" className="block">
