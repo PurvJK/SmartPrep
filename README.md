@@ -121,6 +121,4 @@ Check that:
 2. `MONGODB_URI` is correct
 3. The database server is reachable
 
-## License
 
-This project is for educational and personal use unless otherwise specified by the repository owner.
